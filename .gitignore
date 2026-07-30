@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+dist/
+build/
+*.egg-info/
+
+# JavaScript / Expo
+node_modules/
+.expo/
+.expo-shared/
+web-build/
+.turbo/
+coverage/
+npm-debug.log*
+
+# Runtime data and secrets
+.env
+.env.*
+!.env.example
+data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+owner-token
+agent-token
+
+# Native generated projects and cloud build output
+apps/mobile/android/
+apps/mobile/ios/
+*.apk
+*.aab
+*.ipa
+
+# Editors and operating systems
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

@@ -1,0 +1,17 @@
+services:
+  pocket-api:
+    build:
+      context: ./services/api
+    container_name: centaurai-pocket-api
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8718:8718"
+    environment:
+      CENTAURAI_POCKET_SCHEDULER_POLL_SECONDS: "60"
+    volumes:
+      - pocket-data:/data
+      - ./imports:/imports:ro
+
+volumes:
+  pocket-data:
+    name: centaurai-pocket-data

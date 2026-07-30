@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": [
+      "node"
+    ]
+  },
+  "include": [
+    "src/lib/mutation-queue.ts",
+    "src/lib/*.test.ts"
+  ],
+  "exclude": []
+}

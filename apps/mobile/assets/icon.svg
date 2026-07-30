@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">CentaurAI Pocket</title>
+  <rect width="512" height="512" fill="#070B14"/>
+  <circle cx="422" cy="92" r="18" fill="#A58BFF"/>
+  <circle cx="82" cy="430" r="11" fill="#69A7FF" opacity="0.8"/>
+  <g transform="translate(46 46) scale(3)" fill="none" stroke="#39E6C2" stroke-width="17" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M120 42C108 27 94 20 76 20C43 20 20 47 20 80C20 113 43 140 76 140C94 140 108 133 120 118"/>
+    <path d="M52 124L81 38L112 124M64 92H101"/>
+  </g>
+</svg>
