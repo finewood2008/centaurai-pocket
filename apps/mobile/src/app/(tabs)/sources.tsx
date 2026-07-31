@@ -358,10 +358,10 @@ const styles = StyleSheet.create({
   syncGlyph: {
     width: 46,
     height: 46,
-    borderRadius: 17,
+    borderRadius: 14,
     backgroundColor: colors.blueSoft,
     borderWidth: 1,
-    borderColor: "#28466E",
+    borderColor: colors.blue,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -376,7 +376,7 @@ const styles = StyleSheet.create({
   queuedCard: {
     borderRadius: radii.medium,
     borderWidth: 1,
-    borderColor: "#5A4729",
+    borderColor: colors.warning,
     backgroundColor: colors.warningSoft,
     padding: 14,
     flexDirection: "row",
@@ -387,7 +387,7 @@ const styles = StyleSheet.create({
     width: 38,
     height: 38,
     borderRadius: 12,
-    backgroundColor: "#513D27",
+    backgroundColor: colors.goldSoft,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -438,7 +438,7 @@ const styles = StyleSheet.create({
   overviewValue: {
     color: colors.text,
     fontSize: 20,
-    fontWeight: "800",
+    fontWeight: "600",
   },
   list: {
     gap: 13,
@@ -518,7 +518,7 @@ const styles = StyleSheet.create({
   cardStatValue: {
     color: colors.text,
     fontSize: 17,
-    fontWeight: "800",
+    fontWeight: "600",
   },
   cardStatValueSmall: {
     color: colors.text,
@@ -538,7 +538,7 @@ const styles = StyleSheet.create({
   agentRule: {
     borderRadius: radii.large,
     borderWidth: 1,
-    borderColor: "#332C58",
+    borderColor: colors.violet,
     backgroundColor: colors.violetSoft,
     padding: 16,
     flexDirection: "row",
@@ -548,7 +548,7 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 12,
-    backgroundColor: "#3A3062",
+    backgroundColor: colors.surfaceHighlight,
     alignItems: "center",
     justifyContent: "center",
   },

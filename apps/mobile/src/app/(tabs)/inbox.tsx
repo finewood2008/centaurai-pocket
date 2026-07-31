@@ -514,7 +514,7 @@ const styles = StyleSheet.create({
     gap: 14,
   },
   taskCard: {
-    borderRadius: 24,
+    borderRadius: radii.large,
     backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: colors.borderSoft,
@@ -523,12 +523,12 @@ const styles = StyleSheet.create({
     ...shadows.card,
   },
   featuredCard: {
-    borderColor: "#285651",
-    backgroundColor: "#101C27",
+    borderColor: colors.primary,
+    backgroundColor: colors.primarySoft,
   },
   deletionCard: {
-    borderColor: "#5F2F3C",
-    backgroundColor: "#1E151D",
+    borderColor: colors.danger,
+    backgroundColor: colors.dangerSoft,
   },
   taskTop: {
     flexDirection: "row",
@@ -584,7 +584,7 @@ const styles = StyleSheet.create({
   taskTitle: {
     color: colors.text,
     fontSize: 18,
-    fontWeight: "800",
+    fontWeight: "700",
     lineHeight: 25,
   },
   taskPreview: {
@@ -638,7 +638,7 @@ const styles = StyleSheet.create({
     borderRadius: radii.medium,
     backgroundColor: colors.dangerSoft,
     borderWidth: 1,
-    borderColor: "#633142",
+    borderColor: colors.danger,
     padding: 13,
     gap: 6,
   },
@@ -707,7 +707,7 @@ const styles = StyleSheet.create({
     borderRadius: radii.medium,
     borderWidth: 1,
     borderColor: colors.border,
-    backgroundColor: "#19243A",
+    backgroundColor: colors.surface,
     paddingHorizontal: 14,
     paddingVertical: 10,
     flexDirection: "row",

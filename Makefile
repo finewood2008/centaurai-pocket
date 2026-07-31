@@ -1,4 +1,4 @@
-.PHONY: bootstrap dev test smoke api mobile desktop desktop-install
+.PHONY: bootstrap dev test smoke api mobile mobile-web mobile-verify desktop desktop-install
 
 bootstrap:
 	./scripts/bootstrap.sh
@@ -16,7 +16,13 @@ api:
 	cd services/api && uv run centaur-pocket-api
 
 mobile:
+	cd apps/mobile && npm run start
+
+mobile-web:
 	cd apps/mobile && npm run web
+
+mobile-verify:
+	./scripts/build-mobile.sh
 
 desktop:
 	./scripts/build-desktop.sh

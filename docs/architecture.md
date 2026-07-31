@@ -27,9 +27,12 @@ flowchart LR
     A -->|Agent Bearer；REST / MCP| API
 ```
 
-手机是治理遥控器，不是后台同步服务器。连接器、解析、索引和调度都在私人服务端执行。
+Android/iOS 手机 App 是 Pocket 的主要用户入口，也是个人版的正式交付形态；
+它负责采集、概览和治理，但不是后台同步服务器。连接器、解析、索引和调度都在
+私人服务端执行。
 
-Electron 桌面模式复用同一套 Expo Web 界面，但 Renderer 不直接持有 Owner
+Electron 只作为本机辅助预览和 sidecar 启动壳，复用同一套 Expo Web 界面，
+不代替手机 App。其 Renderer 不直接持有 Owner
 凭据，也不直接访问 API。Main process 每次启动生成随机会话 token，通过私有
 继承管道确认自己启动的 sidecar 已成功绑定 8718，再代理当前 UI 所需的白名单
 接口。端口已有监听者时桌面模式直接拒绝启动，不尝试接管。

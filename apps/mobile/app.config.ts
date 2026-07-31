@@ -7,22 +7,31 @@ const config: ExpoConfig = {
   version: "0.1.0",
   icon: "./assets/icon.png",
   orientation: "portrait",
-  userInterfaceStyle: "dark",
-  backgroundColor: "#070B14",
+  userInterfaceStyle: "light",
+  backgroundColor: "#FAF7F2",
+  primaryColor: "#C0755A",
   ios: {
     bundleIdentifier: "ai.centaur.pocket",
-    supportsTablet: true,
+    buildNumber: "1",
+    supportsTablet: false,
+    config: {
+      usesNonExemptEncryption: false,
+    },
   },
   android: {
     package: "ai.centaur.pocket",
+    versionCode: 1,
     allowBackup: false,
     blockedPermissions: [
       "android.permission.READ_EXTERNAL_STORAGE",
       "android.permission.WRITE_EXTERNAL_STORAGE",
+      "android.permission.SYSTEM_ALERT_WINDOW",
+      "android.permission.VIBRATE",
     ],
     adaptiveIcon: {
       foregroundImage: "./assets/adaptive-icon.png",
-      backgroundColor: "#070B14",
+      monochromeImage: "./assets/monochrome-icon.png",
+      backgroundColor: "#151827",
     },
     predictiveBackGestureEnabled: false,
   },
@@ -34,6 +43,23 @@ const config: ExpoConfig = {
   plugins: [
     "expo-router",
     "expo-secure-store",
+    "expo-font",
+    [
+      "expo-status-bar",
+      {
+        hidden: false,
+        style: "dark",
+      },
+    ],
+    [
+      "expo-splash-screen",
+      {
+        backgroundColor: "#FAF7F2",
+        image: "./assets/icon.png",
+        imageWidth: 120,
+        resizeMode: "contain",
+      },
+    ],
     [
       "expo-sharing",
       {
@@ -48,6 +74,7 @@ const config: ExpoConfig = {
         android: {
           enabled: true,
           singleShareMimeTypes: ["text/plain", "text/*"],
+          multipleShareMimeTypes: ["text/plain", "text/*"],
         },
       },
     ],

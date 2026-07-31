@@ -10,7 +10,7 @@ import {
   type ViewStyle,
 } from "react-native";
 
-import { colors, radii } from "@/theme/colors";
+import { colors, fonts, radii, shadows } from "@/theme/colors";
 
 export function SectionHeader({
   title,
@@ -157,40 +157,68 @@ export function LoadingCards({ count = 3 }: { count?: number }) {
 }
 
 const pillTone = StyleSheet.create({
-  neutral: { backgroundColor: colors.surfaceHighlight },
-  primary: { backgroundColor: colors.primarySoft },
-  warning: { backgroundColor: colors.warningSoft },
-  danger: { backgroundColor: colors.dangerSoft },
-  violet: { backgroundColor: colors.violetSoft },
+  neutral: {
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+  },
+  primary: {
+    backgroundColor: colors.primarySoft,
+    borderColor: colors.primaryBorder,
+  },
+  warning: {
+    backgroundColor: colors.warningSoft,
+    borderColor: colors.gold,
+  },
+  danger: {
+    backgroundColor: colors.dangerSoft,
+    borderColor: colors.danger,
+  },
+  violet: {
+    backgroundColor: colors.goldSoft,
+    borderColor: colors.gold,
+  },
 });
 
 const pillTextTone = StyleSheet.create({
   neutral: { color: colors.textMuted },
-  primary: { color: colors.primary },
+  primary: { color: colors.primaryDark },
   warning: { color: colors.warning },
   danger: { color: colors.danger },
   violet: { color: colors.violet },
 });
 
 const noticeTone = StyleSheet.create({
-  primary: { borderColor: "#23544F", backgroundColor: "#102C2D" },
-  warning: { borderColor: "#5A4729", backgroundColor: "#292319" },
-  danger: { borderColor: "#5F2F3C", backgroundColor: "#2B1921" },
+  primary: {
+    borderColor: colors.primaryBorder,
+    backgroundColor: colors.primarySoft,
+  },
+  warning: {
+    borderColor: colors.gold,
+    backgroundColor: colors.warningSoft,
+  },
+  danger: {
+    borderColor: colors.danger,
+    backgroundColor: colors.dangerSoft,
+  },
 });
 
 const buttonTone = StyleSheet.create({
-  primary: { backgroundColor: colors.primary },
+  primary: { backgroundColor: colors.primaryDark },
   secondary: {
-    backgroundColor: colors.surfaceHighlight,
+    backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: colors.border,
   },
   ghost: { backgroundColor: "transparent" },
-  danger: { backgroundColor: colors.dangerSoft },
+  danger: {
+    backgroundColor: colors.dangerSoft,
+    borderWidth: 1,
+    borderColor: colors.danger,
+  },
 });
 
 const buttonTextTone = StyleSheet.create({
-  primary: { color: colors.background },
+  primary: { color: colors.white },
   secondary: { color: colors.text },
   ghost: { color: colors.textMuted },
   danger: { color: colors.danger },
@@ -210,42 +238,51 @@ const styles = StyleSheet.create({
   sectionTitle: {
     color: colors.text,
     fontSize: 18,
-    fontWeight: "700",
+    fontFamily: fonts.serif,
+    fontWeight: "600",
+    lineHeight: 24,
   },
   sectionCaption: {
     color: colors.textMuted,
+    fontFamily: fonts.sans,
     fontSize: 12,
+    lineHeight: 18,
   },
   pill: {
     alignSelf: "flex-start",
     borderRadius: radii.pill,
+    borderWidth: 1,
     paddingHorizontal: 10,
-    paddingVertical: 5,
+    paddingVertical: 4,
   },
   pillText: {
     fontSize: 11,
-    fontWeight: "700",
+    fontFamily: fonts.sans,
+    fontWeight: "600",
+    lineHeight: 16,
   },
   notice: {
     borderWidth: 1,
     borderRadius: radii.medium,
-    padding: 14,
+    padding: 13,
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
+    gap: 10,
   },
   noticeIcon: {
     width: 28,
     height: 28,
     borderRadius: 14,
-    backgroundColor: "rgba(255,255,255,0.08)",
+    backgroundColor: colors.surface,
+    borderColor: colors.borderSoft,
+    borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
   },
   noticeIconText: {
     color: colors.text,
     fontSize: 17,
-    fontWeight: "800",
+    fontWeight: "700",
   },
   noticeCopy: {
     flex: 1,
@@ -253,11 +290,13 @@ const styles = StyleSheet.create({
   },
   noticeTitle: {
     color: colors.text,
-    fontWeight: "700",
+    fontFamily: fonts.sans,
+    fontWeight: "600",
     fontSize: 13,
   },
   noticeMessage: {
     color: colors.textMuted,
+    fontFamily: fonts.sans,
     fontSize: 12,
     lineHeight: 18,
   },
@@ -267,38 +306,43 @@ const styles = StyleSheet.create({
     borderColor: colors.borderSoft,
     backgroundColor: colors.surface,
     alignItems: "center",
-    padding: 28,
+    padding: 24,
     gap: 9,
+    ...shadows.card,
   },
   emptyIcon: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
     backgroundColor: colors.primarySoft,
+    borderColor: colors.primaryBorder,
+    borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 4,
   },
   emptyIconText: {
     color: colors.primary,
-    fontSize: 24,
-    fontWeight: "800",
+    fontSize: 22,
+    fontWeight: "700",
   },
   emptyTitle: {
     color: colors.text,
     fontSize: 17,
-    fontWeight: "700",
+    fontFamily: fonts.serif,
+    fontWeight: "600",
   },
   emptyMessage: {
     color: colors.textMuted,
+    fontFamily: fonts.sans,
     textAlign: "center",
     fontSize: 13,
     lineHeight: 20,
   },
   button: {
-    minHeight: 46,
+    minHeight: 44,
     borderRadius: radii.medium,
-    paddingHorizontal: 18,
+    paddingHorizontal: 16,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
@@ -306,40 +350,42 @@ const styles = StyleSheet.create({
   },
   buttonCompact: {
     minHeight: 36,
-    borderRadius: 12,
-    paddingHorizontal: 13,
+    borderRadius: radii.small,
+    paddingHorizontal: 12,
   },
   buttonPressed: {
-    opacity: 0.78,
-    transform: [{ scale: 0.985 }],
+    opacity: 0.86,
+    transform: [{ scale: 0.99 }],
   },
   buttonDisabled: {
     opacity: 0.45,
   },
   buttonIcon: {
     fontSize: 16,
-    fontWeight: "800",
+    fontWeight: "700",
   },
   buttonText: {
     fontSize: 14,
-    fontWeight: "700",
+    fontFamily: fonts.sans,
+    fontWeight: "600",
   },
   loadingList: {
     gap: 12,
   },
   loadingCard: {
-    height: 142,
+    height: 136,
     borderRadius: radii.large,
-    padding: 18,
+    padding: 16,
     backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: colors.borderSoft,
-    gap: 14,
+    gap: 12,
+    ...shadows.card,
   },
   skeleton: {
     height: 12,
     borderRadius: 6,
-    backgroundColor: colors.surfaceHighlight,
+    backgroundColor: colors.surfaceSoft,
   },
   skeletonShort: {
     width: "28%",

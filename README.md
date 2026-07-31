@@ -2,7 +2,9 @@
 
 > 半人马随身数据中心：把分散的个人数据持续同步、轻量治理，并安全地提供给个人 Agent。
 
-CentaurAI Pocket 是一个全新、独立的单人私有数据中心。它不是企业 DataHub 的缩小版，也不是旧 `centaurAI-database` 的第二个客户端。它聚焦一个完整闭环：
+CentaurAI Pocket 是一个以 Android/iOS 手机 App 为主要交付形态的全新、独立
+单人私有数据中心。它不是企业 DataHub 的缩小版，也不是旧
+`centaurAI-database` 的第二个客户端。它聚焦一个完整闭环：
 
 1. 设定个人数据源，服务端按计划自动同步。
 2. 自动完成内容指纹、去重、标准化和基础质量检查。
@@ -16,10 +18,11 @@ CentaurAI Pocket 是一个全新、独立的单人私有数据中心。它不是
 - 单人治理收件箱：接受、跳过、撤销、修改条目元数据，并确认来源消失后的归档决定。
 - 只有 `ready` 数据可被 Agent 检索。
 - 独立的单一 Agent 只读 token，可查看前缀并立即轮换；无租户、角色、群组和审批流。
-- Expo 手机端：今日概览、治理卡片、同步源、连接设置、原生端加密离线操作队列，以及文字/网页 URL 的系统分享入口；Web 仅用于预览并使用浏览器本地存储。
-- Electron 桌面端：双击后自动启动本地 API，每次启动使用仅由主进程与 sidecar
-  持有的随机 Owner 会话 token，页面通过窄范围 IPC 操作；无需 Docker、终端或
-  重复输入系统密码。
+- Expo 原生手机 App（主产品）：Android/iOS 今日概览、治理卡片、同步源、连接
+  设置、原生端加密离线队列，以及文字/网页 URL 的系统分享入口。UI 使用当前
+  CentaurAI“暖米”品牌体系；Web 只作为开发预览。
+- Electron 桌面辅助壳：用于本机开发演示和自动启动 API，不是个人版的主要交付
+  入口。
 
 ## 产品边界
 
@@ -48,8 +51,8 @@ CentaurAI Pocket 是一个全新、独立的单人私有数据中心。它不是
 
 ```text
 centaurai-pocket/
-├── apps/mobile/          # Expo iOS / Android / Web 客户端
-├── apps/desktop/         # Electron 桌面壳与本地 sidecar 管理
+├── apps/mobile/          # 主产品：Expo Android / iOS 手机 App
+├── apps/desktop/         # 辅助：Electron 本机预览与 sidecar 管理
 ├── services/api/         # FastAPI、SQLite、同步与 Agent API
 ├── docs/                 # 产品、架构、接口与隔离说明
 └── scripts/              # 本地开发和验证脚本
@@ -70,10 +73,22 @@ uv run uvicorn centaur_pocket.main:app --host 127.0.0.1 --port 8718 --reload
 ```bash
 cd apps/mobile
 npm install
-npm run web
+npm run start
 ```
 
 默认手机端连接 `http://127.0.0.1:8718`，只适合同机开发。真机使用时，在“设置”中填写电脑或 NAS 的 HTTPS 地址；即使通过私有 VPN 连接，移动端生产配置也应使用 HTTPS。
+
+手机 App 完整校验与 Android/iOS 云构建入口：
+
+```bash
+./scripts/build-mobile.sh
+./scripts/build-mobile.sh android preview   # EAS 内部测试 APK
+./scripts/build-mobile.sh android production # Google Play AAB
+./scripts/build-mobile.sh ios preview        # EAS iOS 内部测试包
+```
+
+EAS 构建需要产品所有者登录 Expo 账号并确认签名；仓库不会虚构或提交账号、
+证书、keystore 与 Apple Team。
 
 也可以在仓库根目录运行：
 
@@ -82,7 +97,7 @@ npm run web
 ./scripts/dev.sh
 ```
 
-Electron 桌面版构建与快捷方式：
+Electron 桌面辅助壳构建与快捷方式：
 
 ```bash
 make desktop

@@ -1,19 +1,24 @@
+import Ionicons from "@expo/vector-icons/Ionicons";
 import { Tabs } from "expo-router";
-import { StyleSheet, Text, type ColorValue } from "react-native";
+import type { ComponentProps } from "react";
+import { StyleSheet, type ColorValue } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { colors } from "@/theme/colors";
 
 function TabIcon({
-  symbol,
+  name,
   color,
 }: {
-  symbol: string;
+  name: ComponentProps<typeof Ionicons>["name"];
   color: ColorValue;
 }) {
-  return <Text style={[styles.icon, { color }]}>{symbol}</Text>;
+  return <Ionicons name={name} color={color} size={24} />;
 }
 
 export default function TabLayout() {
+  const insets = useSafeAreaInsets();
+
   return (
     <Tabs
       screenOptions={{
@@ -22,7 +27,14 @@ export default function TabLayout() {
         tabBarActiveTintColor: colors.primary,
         tabBarInactiveTintColor: colors.textDim,
         tabBarLabelStyle: styles.label,
-        tabBarStyle: styles.bar,
+        tabBarIconStyle: styles.icon,
+        tabBarStyle: [
+          styles.bar,
+          {
+            height: 60 + insets.bottom,
+            paddingBottom: Math.max(insets.bottom, 4),
+          },
+        ],
         tabBarItemStyle: styles.item,
         tabBarHideOnKeyboard: true,
       }}
@@ -31,28 +43,32 @@ export default function TabLayout() {
         name="index"
         options={{
           title: "今日",
-          tabBarIcon: ({ color }) => <TabIcon symbol="⌂" color={color} />,
+          tabBarIcon: ({ color }) => <TabIcon name="home-outline" color={color} />,
         }}
       />
       <Tabs.Screen
         name="inbox"
         options={{
           title: "治理",
-          tabBarIcon: ({ color }) => <TabIcon symbol="◇" color={color} />,
+          tabBarIcon: ({ color }) => (
+            <TabIcon name="shield-checkmark-outline" color={color} />
+          ),
         }}
       />
       <Tabs.Screen
         name="sources"
         options={{
           title: "同步",
-          tabBarIcon: ({ color }) => <TabIcon symbol="↻" color={color} />,
+          tabBarIcon: ({ color }) => <TabIcon name="sync-outline" color={color} />,
         }}
       />
       <Tabs.Screen
         name="settings"
         options={{
           title: "设置",
-          tabBarIcon: ({ color }) => <TabIcon symbol="⚙" color={color} />,
+          tabBarIcon: ({ color }) => (
+            <TabIcon name="settings-outline" color={color} />
+          ),
         }}
       />
     </Tabs>
@@ -61,26 +77,23 @@ export default function TabLayout() {
 
 const styles = StyleSheet.create({
   bar: {
-    position: "absolute",
-    height: 76,
-    paddingTop: 8,
-    paddingBottom: 10,
-    backgroundColor: "#0B1220F5",
+    paddingTop: 4,
+    backgroundColor: colors.surfaceSoft,
     borderTopWidth: 1,
-    borderTopColor: colors.borderSoft,
+    borderTopColor: colors.border,
     elevation: 0,
+    shadowOpacity: 0,
   },
   item: {
-    borderRadius: 14,
+    paddingVertical: 3,
   },
   icon: {
-    fontSize: 22,
-    fontWeight: "700",
-    lineHeight: 24,
+    marginTop: 0,
   },
   label: {
-    fontSize: 11,
-    fontWeight: "700",
-    marginTop: 2,
+    fontSize: 10,
+    fontWeight: "500",
+    lineHeight: 12,
+    marginTop: 1,
   },
 });

@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from "react";
+import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
@@ -15,6 +16,7 @@ export default function TodayScreen() {
   const {
     api,
     mutations,
+    isConfigured,
     isFlushing,
     queueLoadError,
     lastQueueError,
@@ -57,25 +59,27 @@ export default function TodayScreen() {
         eyebrow="CENTAURAI · POCKET"
         title="今日"
         subtitle={todayLabel()}
-        trailing={
-          <View style={styles.logo}>
-            <Text style={styles.logoGlyph}>C</Text>
-            <View style={styles.logoDot} />
-          </View>
-        }
       />
 
       {resource.isDemo ? (
         <Notice
-          title="当前为离线演示"
-          message={`${resource.error ?? "未连接到私人数据中心"}。下面是明确标记的演示数据，不代表真实状态。`}
+          title={isConfigured ? "当前为离线演示" : "连接你的个人数据中心"}
+          message={
+            isConfigured
+              ? `${resource.error ?? "暂时无法连接私人数据中心"}。下面是明确标记的演示数据，不代表真实状态。`
+              : "首次使用请在设置中填写电脑或 NAS 的 HTTPS 地址与 Owner token；完成后手机即可安全查看、治理和采集个人数据。"
+          }
           tone="warning"
           action={
             <Button
               compact
               tone="ghost"
-              label="重试"
-              onPress={() => void reloadDashboard()}
+              label={isConfigured ? "重试" : "去连接"}
+              onPress={
+                isConfigured
+                  ? () => void reloadDashboard()
+                  : () => router.push("/settings")
+              }
             />
           }
         />
@@ -187,7 +191,11 @@ export default function TodayScreen() {
               ]}
             >
               <View style={styles.actionIcon}>
-                <Text style={styles.actionIconText}>◇</Text>
+                <Ionicons
+                  name="layers-outline"
+                  size={23}
+                  color={colors.violet}
+                />
               </View>
               <View style={styles.actionCopy}>
                 <Text style={styles.actionTitle}>清理治理收件箱</Text>
@@ -195,7 +203,38 @@ export default function TodayScreen() {
                   接受分类、合并重复或补全缺失字段
                 </Text>
               </View>
-              <Text style={styles.chevron}>›</Text>
+              <Ionicons
+                name="chevron-forward"
+                size={20}
+                color={colors.textDim}
+              />
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => router.push("/handle-share")}
+              style={({ pressed }) => [
+                styles.actionCard,
+                pressed && styles.pressed,
+              ]}
+            >
+              <View style={[styles.actionIcon, styles.captureActionIcon]}>
+                <Ionicons
+                  name="sparkles-outline"
+                  size={23}
+                  color={colors.primary}
+                />
+              </View>
+              <View style={styles.actionCopy}>
+                <Text style={styles.actionTitle}>快速采集一条灵感</Text>
+                <Text style={styles.actionSubtitle}>
+                  保存文字或网页链接，稍后统一治理
+                </Text>
+              </View>
+              <Ionicons
+                name="chevron-forward"
+                size={20}
+                color={colors.textDim}
+              />
             </Pressable>
           </View>
 
@@ -251,38 +290,13 @@ const metricTones = StyleSheet.create({
 });
 
 const styles = StyleSheet.create({
-  logo: {
-    width: 46,
-    height: 46,
-    borderRadius: 17,
-    borderWidth: 1,
-    borderColor: "#356B66",
-    backgroundColor: "#102D2E",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  logoGlyph: {
-    color: colors.primary,
-    fontSize: 22,
-    fontWeight: "900",
-    fontStyle: "italic",
-  },
-  logoDot: {
-    position: "absolute",
-    right: 7,
-    top: 7,
-    width: 5,
-    height: 5,
-    borderRadius: 3,
-    backgroundColor: colors.violet,
-  },
   heroCard: {
-    borderRadius: 26,
-    padding: 22,
-    gap: 18,
-    backgroundColor: "#102026",
+    borderRadius: radii.large,
+    padding: 20,
+    gap: 16,
+    backgroundColor: colors.primarySoft,
     borderWidth: 1,
-    borderColor: "#224844",
+    borderColor: colors.primary,
     ...shadows.card,
   },
   heroTop: {
@@ -302,9 +316,9 @@ const styles = StyleSheet.create({
   },
   heroNumber: {
     color: colors.text,
-    fontSize: 50,
-    lineHeight: 55,
-    fontWeight: "800",
+    fontSize: 46,
+    lineHeight: 52,
+    fontWeight: "600",
     letterSpacing: -2,
   },
   heroPercent: {
@@ -318,14 +332,14 @@ const styles = StyleSheet.create({
     width: 72,
     height: 72,
     borderRadius: 36,
-    borderWidth: 4,
-    borderColor: colors.primary,
-    backgroundColor: colors.primaryDark,
+    borderWidth: 3,
+    borderColor: colors.gold,
+    backgroundColor: colors.surface,
     alignItems: "center",
     justifyContent: "center",
   },
   qualityValue: {
-    color: colors.text,
+    color: colors.primaryDark,
     fontSize: 22,
     lineHeight: 25,
     fontWeight: "800",
@@ -337,7 +351,7 @@ const styles = StyleSheet.create({
   progressTrack: {
     height: 7,
     borderRadius: 4,
-    backgroundColor: "#213437",
+    backgroundColor: colors.surfaceHighlight,
     overflow: "hidden",
   },
   progressFill: {
@@ -421,6 +435,9 @@ const styles = StyleSheet.create({
   actionIconText: {
     color: colors.violet,
     fontSize: 25,
+  },
+  captureActionIcon: {
+    backgroundColor: colors.primarySoft,
   },
   actionCopy: {
     flex: 1,

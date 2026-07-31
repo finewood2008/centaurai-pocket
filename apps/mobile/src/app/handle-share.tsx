@@ -346,13 +346,13 @@ const styles = StyleSheet.create({
   modalTitle: {
     color: colors.text,
     fontSize: 16,
-    fontWeight: "800",
+    fontWeight: "700",
   },
   captureHero: {
-    borderRadius: 24,
+    borderRadius: radii.large,
     borderWidth: 1,
-    borderColor: "#2B554F",
-    backgroundColor: "#102729",
+    borderColor: colors.primary,
+    backgroundColor: colors.primarySoft,
     padding: 18,
     flexDirection: "row",
     gap: 14,
@@ -360,7 +360,7 @@ const styles = StyleSheet.create({
   captureIcon: {
     width: 48,
     height: 48,
-    borderRadius: 17,
+    borderRadius: 14,
     backgroundColor: colors.primarySoft,
     alignItems: "center",
     justifyContent: "center",
@@ -377,7 +377,7 @@ const styles = StyleSheet.create({
   captureHeroTitle: {
     color: colors.text,
     fontSize: 16,
-    fontWeight: "800",
+    fontWeight: "700",
   },
   captureHeroText: {
     color: colors.textMuted,
@@ -421,9 +421,9 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
   savedCard: {
-    borderRadius: 26,
+    borderRadius: radii.large,
     borderWidth: 1,
-    borderColor: "#285951",
+    borderColor: colors.success,
     backgroundColor: colors.surface,
     padding: 26,
     alignItems: "center",
@@ -435,7 +435,7 @@ const styles = StyleSheet.create({
     borderRadius: 32,
     backgroundColor: colors.primarySoft,
     borderWidth: 1,
-    borderColor: "#2B625A",
+    borderColor: colors.success,
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 4,

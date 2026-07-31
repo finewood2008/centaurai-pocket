@@ -3,6 +3,10 @@
 “半人马随身数据中心”的独立手机端。它是单人数据治理控制台，不复用旧
 `centaurAI-database` 的登录、JWT、EAS projectId、包名、端口或本地存储。
 
+Android application ID 与 iOS bundle identifier 均为
+`ai.centaur.pocket`。它与旧个人节点 App 的 `ai.centaur.personalnode` 是两个
+不同应用，不能互相覆盖升级；正式签名或上架后不要再随意修改这个标识。
+
 ## 已实现
 
 - 今日概览：待治理、已就绪、总记录、同步源状态，以及后端 `quality_score` 治理进度
@@ -63,11 +67,25 @@ IPC 代理 API，Renderer 不会收到 token，也不会把它写入 AsyncStorag
 Expo Web 从其他 Origin 访问 API 时，服务端还需把该精确 Origin 加入
 `CENTAURAI_POCKET_CORS_ORIGINS`；CORS 不替代 Owner token。
 
+### 新手机首次连接
+
+`127.0.0.1` 在真机上指向手机自己，并不会自动连接运行在电脑上的 Pocket
+服务。新手机首次使用时：
+
+1. 先在电脑或 NAS 上启动 Pocket API，并通过可信 HTTPS 域名或私有 VPN 暴露服务；
+2. 从服务端安全取得首次启动生成的 Owner token，不使用旧项目账号、密码或 JWT；
+3. 在 App「设置」中填写服务地址与 Owner token，先点「测试连接」，成功后再保存；
+4. 回到「今日」下拉刷新，确认显示的不是离线演示数据；
+5. 从浏览器或备忘录向 App 分享一段测试文字，确认冷启动、热启动和离线重试均正常。
+
+不要通过群聊、普通邮件或截图传递生产 Owner token。添加文件夹来源时填写的是
+API 所在电脑、NAS 或容器能够读取的服务端绝对路径，不是手机文件路径。
+
 ## 系统分享接收
 
 `app.config.ts` 使用 `expo-sharing` config plugin：
 
-- Android 注册单项 `text/*` 分享目标
+- Android 注册单项或多项 `text/*` 分享目标
 - iOS Share Extension 接受文字、网页 URL 与网页
 - `+native-intent.ts` 将 iOS 的 `expo-sharing` deep link 导向
   `/handle-share`
@@ -155,7 +173,19 @@ config plugin 的改动需要重新构建原生应用，普通 Web 刷新不会�
 幂等键只通过 `Idempotency-Key` 请求头发送，避免污染启用
 `extra="forbid"` 的业务请求体。
 
-## 校验
+## 手机端校验
+
+在仓库根目录运行：
+
+```bash
+./scripts/build-mobile.sh
+```
+
+不带参数时只做本地校验，不会登录 EAS、创建项目、申请签名或发起付费云构建。
+它依次验证 EAS JSON、Expo 配置、TypeScript、ESLint、单元测试、Expo Doctor
+和 Web 导出。
+
+也可以在本目录手动执行：
 
 ```bash
 npm run typecheck
@@ -165,14 +195,117 @@ npx expo-doctor
 npm run export:web
 ```
 
-这些命令不生成或验证 Android/iOS 原生二进制。当前仓库未配置 EAS
-`projectId`、`eas.json`、签名凭据，也未提交 APK/IPA：
+以上命令均不生成或验证 Android/iOS 原生二进制。只有成功完成原生构建、安装和
+真机用例后，才能声称手机 App 已通过验收。
+
+## EAS 云构建
+
+`eas.json` 提供三套 profile：
+
+| Profile | Android 输出 | iOS 输出 | 用途 |
+| --- | --- | --- | --- |
+| `development` | APK，内部发布 | 内部分发 IPA | 研发设备安装；当前是不带开发菜单的独立包 |
+| `preview` | APK，内部发布 | 内部分发 IPA | 产品和真机验收 |
+| `production` | AAB | App Store/TestFlight 构建 | 商店正式发布 |
+
+当前没有安装 `expo-dev-client`，因此 `development` 没有开启
+`developmentClient`。如果未来确实需要开发菜单，应先加入匹配当前 Expo SDK 的
+`expo-dev-client`，再显式调整 profile，不能只打开配置开关。
+
+构建示例：
+
+```bash
+# 内部 Android APK
+./scripts/build-mobile.sh android preview
+
+# Google Play AAB
+./scripts/build-mobile.sh android production
+
+# iOS 内部包或正式包
+./scripts/build-mobile.sh ios preview
+./scripts/build-mobile.sh ios production
+```
+
+每次云构建前脚本都会先运行完整本地校验，然后调用仓库锁定的
+`eas-cli@21.4.0`。仓库有意不虚构或提交 EAS `projectId`、Expo 账号、
+Android keystore、Apple Team、证书或 provisioning profile。第一次构建前必须由
+产品所有者执行并确认：
+
+```bash
+cd apps/mobile
+npx eas-cli@21.4.0 login
+npx eas-cli@21.4.0 init
+```
+
+`eas init` 会把项目关联到当前登录账号，并可能把真实 `projectId` 写入 Expo
+配置；应确认组织归属后再提交。签名凭据由 EAS 后续流程提示生成或选择，不能使用
+仓库中原生预构建目录里的 debug keystore 作为生产签名。
+
+版本来源固定为 `local`。发布新版本前必须在源码中明确递增应用版本，以及
+Android `versionCode` 和 iOS `buildNumber`；同一商店版本号不能重复上传。
+
+### Android 本地构建
+
+具备 Android Studio/SDK、ADB、兼容 JDK 和已连接设备或模拟器后，可以执行：
+
+```bash
+cd apps/mobile
+npx expo run:android --device
+```
+
+这会生成原生目录并安装调试包。当前仓库忽略生成的 `android/`、`ios/` 和安装包，
+原生配置的来源仍是 `app.config.ts` 与 config plugins。
+
+### iOS 构建限制
+
+Linux 不能本地运行 Xcode、iOS Simulator 或安装 IPA；在 Linux 上调用构建脚本时，
+iOS 只能交给 EAS 的 macOS 云构建机。iOS 真机或 TestFlight 仍需要产品所有者的
+Apple Developer 账号、App ID、App Group、证书与 provisioning profile。本地
+iOS 调试必须在 macOS/Xcode 上执行：
+
+```bash
+cd apps/mobile
+npx expo run:ios --device
+```
+
+iOS 分享接收依赖 Share Extension 与 `group.ai.centaur.pocket` App Group，当前
+deployment target 为 iOS 16.4。主 App 和 Extension 必须由同一 Apple Team 正确
+签名后再做真机测试。
+
+## 真机验收边界
+
+Android preview APK 至少需要验证：
+
+- 首次安装、覆盖升级、完全退出后重启，以及设备重启后的连接设置；
+- 使用真实 HTTPS/私有 VPN 地址访问受保护的 dashboard；
+- 从浏览器、备忘录等真实 App 分享文字与 URL，分别覆盖冷启动和热启动；
+- 断网保存、恢复网络后的离线队列重试，以及切换连接后旧队列不会误发；
+- 小屏、刘海/挖孔、系统大字体、软键盘和底部手势区域；
+- 最终 APK/AAB 的包名为 `ai.centaur.pocket`、生产签名正确且无多余敏感权限。
+
+连接 Android 设备后可辅助验证路由与文字分享：
+
+```bash
+adb install -r centaurai-pocket-preview.apk
+adb shell am start -W -a android.intent.action.VIEW \
+  -d 'centaur-pocket://handle-share'
+adb shell am start -W \
+  -a android.intent.action.SEND \
+  -t text/plain \
+  --es android.intent.extra.TEXT 'CENTAUR_SHARE_CANARY' \
+  -n ai.centaur.pocket/.MainActivity
+```
+
+iOS 需要在 iOS 16.4+ 真机上确认分享面板能看到半人马 App、Share Extension
+可以唤起主 App、App Group 能传递文字/URL，并覆盖未启动、后台和前台三种状态。
+Expo Go、Web 预览和模拟 deep link 都不能替代这项验收。
+
+当前边界：
 
 - 本地 Android 构建可用 `npx expo run:android`，但必须先安装 Android SDK、
   接受相应许可，并准备设备/模拟器和兼容的 Java/Gradle 环境。
 - Linux 不能本地构建 iOS；本地 iOS 需要 macOS 与 Xcode。
-- EAS 云构建需要产品所有者的 Expo 登录与签名配置；带开发菜单的 development
-  client 还需额外安装 `expo-dev-client` 并配置 build profile。
+- EAS 云构建需要产品所有者的 Expo 登录、真实项目关联与签名配置。
 - `expo-sharing` config plugin 或接收类型变化后必须重建原生二进制。当前 iOS
   Share Extension deployment target 为 iOS 16.4；接收分享仍属于 Expo 标记的
   实验能力，应在 iOS 16.4+ 的目标系统版本上真机验收。

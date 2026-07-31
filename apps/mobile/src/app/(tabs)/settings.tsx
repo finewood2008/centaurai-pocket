@@ -255,7 +255,7 @@ function ReadySettingsScreen() {
             <Text style={styles.help}>
               {desktopManaged
                 ? `Electron 已自动连接本机服务：${apiBaseUrl(serverUrl)}`
-                : `真机请填写电脑或 NAS 的局域网地址；请求目标：${apiBaseUrl(serverUrl)}`}
+                : `真机请填写电脑或 NAS 对手机开放的 HTTPS 地址；请求目标：${apiBaseUrl(serverUrl)}`}
             </Text>
             {urlSecurityError ? (
               <Text style={styles.requiredHelp}>{urlSecurityError}</Text>
@@ -465,8 +465,8 @@ const styles = StyleSheet.create({
   ownerCard: {
     borderRadius: radii.large,
     borderWidth: 1,
-    borderColor: "#23534E",
-    backgroundColor: "#102628",
+    borderColor: colors.primary,
+    backgroundColor: colors.primarySoft,
     padding: 16,
     flexDirection: "row",
     alignItems: "center",
@@ -513,7 +513,7 @@ const styles = StyleSheet.create({
     width: 32,
     height: 32,
     borderRadius: 11,
-    backgroundColor: "#183536",
+    backgroundColor: colors.goldSoft,
     alignItems: "center",
     justifyContent: "center",
   },

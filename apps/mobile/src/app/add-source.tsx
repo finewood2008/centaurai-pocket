@@ -308,13 +308,13 @@ const styles = StyleSheet.create({
   title: {
     color: colors.text,
     fontSize: 17,
-    fontWeight: "800",
+    fontWeight: "700",
   },
   hero: {
-    borderRadius: 24,
+    borderRadius: radii.large,
     borderWidth: 1,
-    borderColor: "#28466E",
-    backgroundColor: colors.blueSoft,
+    borderColor: colors.primary,
+    backgroundColor: colors.primarySoft,
     padding: 18,
     flexDirection: "row",
     gap: 14,
@@ -322,13 +322,13 @@ const styles = StyleSheet.create({
   heroIcon: {
     width: 48,
     height: 48,
-    borderRadius: 17,
-    backgroundColor: "#203B61",
+    borderRadius: 14,
+    backgroundColor: colors.goldSoft,
     alignItems: "center",
     justifyContent: "center",
   },
   heroIconText: {
-    color: colors.blue,
+    color: colors.primary,
     fontSize: 25,
     fontWeight: "700",
   },
@@ -339,7 +339,7 @@ const styles = StyleSheet.create({
   heroTitle: {
     color: colors.text,
     fontSize: 16,
-    fontWeight: "800",
+    fontWeight: "700",
   },
   heroText: {
     color: colors.textMuted,
@@ -401,7 +401,7 @@ const styles = StyleSheet.create({
     gap: 11,
   },
   scheduleSelected: {
-    borderColor: "#2E6B62",
+    borderColor: colors.primary,
     backgroundColor: colors.primarySoft,
   },
   radio: {
@@ -439,9 +439,9 @@ const styles = StyleSheet.create({
     fontSize: 10,
   },
   savedCard: {
-    borderRadius: 26,
+    borderRadius: radii.large,
     borderWidth: 1,
-    borderColor: "#285951",
+    borderColor: colors.success,
     backgroundColor: colors.surface,
     padding: 26,
     alignItems: "center",

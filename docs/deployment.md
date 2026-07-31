@@ -1,5 +1,8 @@
 # 启动、部署与手机构建
 
+Pocket 个人版以 Android/iOS 手机 App 为主要交付物；Web 只用于开发预览，
+Electron 仅是本机辅助启动壳。
+
 ## 1. 本机开发
 
 要求：
@@ -171,7 +174,9 @@ docker compose down
 
 ## 6. Android / iOS 原生构建
 
-本仓库不包含 Expo EAS `projectId`、`eas.json`、签名凭据或已签名 APK/IPA，`npm run export:web` 也不会验证原生分享扩展。
+仓库已包含 `apps/mobile/eas.json` 与可复现的 development、preview、production
+构建 profile，但不包含 Expo EAS `projectId`、账号、签名凭据或已签名 APK/IPA。
+`npm run export:web` 也不会验证原生分享扩展。
 
 本地 Android 构建需要已安装 Android SDK、接受相应 SDK 许可、可用的设备或模拟器，以及与 Expo SDK 57 兼容的 Java/Gradle 环境：
 
@@ -182,16 +187,23 @@ npx expo run:android
 
 Linux 不能本地构建 iOS；本地 iOS 需要 macOS、Xcode 和 Apple 开发环境。
 
-也可以由产品所有者使用 EAS 云构建。需要 Expo 账号登录；iOS 还需要 Apple Developer 账号和签名配置：
+也可以由产品所有者使用预置 profile 发起 EAS 云构建。需要 Expo 账号登录并先把
+项目关联到正确组织；iOS 还需要 Apple Developer 账号和签名配置：
 
 ```bash
 cd /home/user/centaurai-pocket/apps/mobile
-npx eas-cli@latest login
-npx eas-cli@latest build:configure
-npx eas-cli@latest build --platform android
+npx eas-cli@21.4.0 login
+npx eas-cli@21.4.0 init
+
+cd /home/user/centaurai-pocket
+./scripts/build-mobile.sh android preview      # 内部测试 APK
+./scripts/build-mobile.sh android production   # Google Play AAB
+./scripts/build-mobile.sh ios preview           # iOS 内部测试包
 ```
 
-若要生成带 Expo 开发菜单的 development client，还需先安装 `expo-dev-client` 并配置 `developmentClient` profile；该依赖和 profile 当前没有预置。iOS 使用同样 EAS 命令并把平台改为 `ios`。
+若要生成带 Expo 开发菜单的 development client，还需先安装 `expo-dev-client`，
+再显式为 development profile 设置 `developmentClient`；当前 development
+profile 已预置为不带开发菜单的内部安装包。
 
 系统分享接收依赖 `expo-sharing` 原生配置，修改插件设置后必须重新生成原生二进制，普通 JavaScript 热更新不会改变 iOS Share Extension 或 Android intent filter。SDK 57 插件生成的 iOS Share Extension deployment target 是 iOS 16.4，因此 iOS 16.4+ 才在支持范围内。当前只注册文字/网页 URL；文件、图片和 PDF 不会上传。Expo 仍把 iOS 接收分享标记为实验能力，因此必须在目标系统版本上做真机验收。
 
