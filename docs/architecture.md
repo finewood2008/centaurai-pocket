@@ -5,6 +5,9 @@
 ```mermaid
 flowchart LR
     M[CentaurAI Pocket 手机 App]
+    D[Electron Desktop Renderer]
+    DM[Electron Main / API Proxy]
+    SIDE[Python API Sidecar]
     API[Personal Data API :8718]
     S[Sync Scheduler / Connectors]
     G[Normalize + Dedupe + Quality]
@@ -13,6 +16,9 @@ flowchart LR
     A[Personal Agent / MCP]
 
     M <-->|Owner token、治理、概览| API
+    D -->|窄范围 IPC；无 Owner token| DM
+    DM -->|随机会话 token；回环请求| SIDE
+    SIDE --> API
     S -->|增量数据| G
     G --> DB
     API --> DB
@@ -22,6 +28,11 @@ flowchart LR
 ```
 
 手机是治理遥控器，不是后台同步服务器。连接器、解析、索引和调度都在私人服务端执行。
+
+Electron 桌面模式复用同一套 Expo Web 界面，但 Renderer 不直接持有 Owner
+凭据，也不直接访问 API。Main process 每次启动生成随机会话 token，通过私有
+继承管道确认自己启动的 sidecar 已成功绑定 8718，再代理当前 UI 所需的白名单
+接口。端口已有监听者时桌面模式直接拒绝启动，不尝试接管。
 
 ## 组件
 
@@ -33,6 +44,25 @@ flowchart LR
 - 原生端持久化队列使用 AES-GCM-256 加密，密钥保存在 SecureStore；Web 预览为浏览器本地明文存储。
 - 今日、治理、来源和设置四个主要入口。
 - 系统分享在 Android/iOS development 或 production build 中接收文字与网页 URL；文件、图片和 PDF 未实现。Web 版用于快速验证 UI。
+
+### Electron Desktop
+
+- Desktop App ID 为 `ai.centaur.pocket.desktop`；与移动包名
+  `ai.centaur.pocket` 区分。
+- 本地内容由 `centaur-pocket://app` 自定义安全协议提供，导航、下载、新窗口和
+  网页权限默认拒绝。
+- Preload 只暴露启动配置与白名单 Pocket API 请求；不暴露 Node、文件系统、
+  shell、进程、任意 URL 或原始 IPC；另有一个只返回用户选择结果的原生目录
+  选择器。
+- Main 生成每次启动随机的 Owner 会话 token；真实值不进入 Renderer、
+  LocalStorage 或 DevTools。
+- PyInstaller sidecar 通过 FD 3 私有管道返回 PID、端口和随机 nonce，Main
+  验证后才开始健康检查；公开 `/health` 不能证明进程归属。
+- 新建文件夹来源必须匹配 Main 原生选择器持久化批准的绝对路径，Renderer 不能
+  仅靠构造 `POST /sources` 扫描其他宿主目录。
+- 当前 CentaurOS 便携启动受 AppArmor 限制，Chromium 进程 sandbox 实际关闭，
+  由强制 bubblewrap 提供外层、只读为主的文件系统约束；这不是正式系统安装包
+  中 Chromium sandbox 的等价替代。
 
 ### Personal Data API
 

@@ -7,6 +7,10 @@ import * as SecureStore from "expo-secure-store";
 import { Platform } from "react-native";
 
 import { DEFAULT_SERVER_URL, normalizeServerUrl } from "@/lib/api";
+import {
+  DESKTOP_MANAGED_OWNER,
+  loadDesktopBootstrap,
+} from "@/lib/desktop-bridge";
 import type { ConnectionSettings } from "@/lib/types";
 
 const SERVER_URL_KEY = "centaur-pocket.settings.server-url.v1";
@@ -47,6 +51,23 @@ async function writeToken(token: string): Promise<void> {
 }
 
 export async function loadConnectionSettings(): Promise<ConnectionSettings> {
+  const desktopBootstrap = await loadDesktopBootstrap();
+  if (desktopBootstrap) {
+    await Promise.all([
+      AsyncStorage.removeItem(SERVER_URL_KEY),
+      writeToken(""),
+    ]);
+    const serverUrl = normalizeServerUrl(desktopBootstrap.serverUrl);
+    return {
+      serverUrl,
+      ownerToken: DESKTOP_MANAGED_OWNER,
+      profileId: await connectionProfileId(
+        serverUrl,
+        DESKTOP_MANAGED_OWNER,
+      ),
+      managedByDesktop: true,
+    };
+  }
   const [storedServerUrl, ownerToken] = await Promise.all([
     AsyncStorage.getItem(SERVER_URL_KEY),
     readToken(),
@@ -57,18 +78,32 @@ export async function loadConnectionSettings(): Promise<ConnectionSettings> {
     serverUrl,
     ownerToken,
     profileId: await connectionProfileId(serverUrl, ownerToken),
+    managedByDesktop: false,
   };
 }
 
 export async function saveConnectionSettings(
   settings: ConnectionSettings,
 ): Promise<ConnectionSettings> {
+  if (settings.managedByDesktop) {
+    const serverUrl = normalizeServerUrl(settings.serverUrl);
+    return {
+      serverUrl,
+      ownerToken: DESKTOP_MANAGED_OWNER,
+      profileId: await connectionProfileId(
+        serverUrl,
+        DESKTOP_MANAGED_OWNER,
+      ),
+      managedByDesktop: true,
+    };
+  }
   const serverUrl = normalizeServerUrl(settings.serverUrl);
   const ownerToken = settings.ownerToken.trim();
   const normalized: ConnectionSettings = {
     serverUrl,
     ownerToken,
     profileId: await connectionProfileId(serverUrl, ownerToken),
+    managedByDesktop: false,
   };
 
   await Promise.all([

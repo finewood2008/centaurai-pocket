@@ -1,0 +1,14 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=CentaurAI Pocket
+Name[zh_CN]=半人马随身数据中心
+Comment=个人私有数据同步、治理与 Agent 数据服务
+Comment[zh_CN]=个人私有数据同步、治理与 Agent 数据服务
+Exec=@@EXEC@@
+Icon=@@ICON@@
+Terminal=false
+Categories=Utility;
+Keywords=CentaurAI;AI;Data;Governance;Private;
+StartupNotify=true
+StartupWMClass=centaurai-pocket

@@ -36,6 +36,10 @@ import {
   saveMutationQueue,
 } from "@/lib/mutation-storage";
 import {
+  DESKTOP_MANAGED_OWNER,
+  isDesktopRuntime,
+} from "@/lib/desktop-bridge";
+import {
   loadConnectionSettings,
   saveConnectionSettings,
 } from "@/lib/settings-storage";
@@ -83,10 +87,12 @@ type PocketContextValue = {
   clearUnreadableQueue: () => Promise<void>;
 };
 
+const startsInDesktopRuntime = isDesktopRuntime();
 const initialSettings: ConnectionSettings = {
   serverUrl: DEFAULT_SERVER_URL,
-  ownerToken: "",
+  ownerToken: startsInDesktopRuntime ? DESKTOP_MANAGED_OWNER : "",
   profileId: "connection-loading",
+  managedByDesktop: startsInDesktopRuntime,
 };
 
 const PocketContext = createContext<PocketContextValue | null>(null);
@@ -113,7 +119,9 @@ export function PocketProvider({ children }: PropsWithChildren) {
     [settings.profileId, storedMutations],
   );
   const inactiveMutationCount = storedMutations.length - mutations.length;
-  const isConfigured = Boolean(settings.ownerToken.trim());
+  const isConfigured =
+    !settingsLoadError &&
+    (settings.managedByDesktop === true || Boolean(settings.ownerToken.trim()));
   const lastQueueError =
     queueLoadError ??
     settingsLoadError ??
@@ -269,6 +277,11 @@ export function PocketProvider({ children }: PropsWithChildren) {
           "本机离线队列无法读取。请先到设置页处理旧队列，避免覆盖尚未恢复的操作",
         );
       }
+      if (settingsLoadError) {
+        throw new Error(
+          "连接设置无法读取。桌面安全桥未就绪时不会保存或发送操作",
+        );
+      }
       if (!settings.ownerToken.trim()) {
         throw new Error("请先到设置页完成服务地址与 Owner token 配置");
       }
@@ -286,6 +299,7 @@ export function PocketProvider({ children }: PropsWithChildren) {
       commitQueue,
       flushQueue,
       queueLoadError,
+      settingsLoadError,
       settings.ownerToken,
       settings.profileId,
     ],
@@ -357,7 +371,7 @@ export function PocketProvider({ children }: PropsWithChildren) {
 
   const persistSettings = useCallback(
     async (next: ConnectionSettings) => {
-      if (!next.ownerToken.trim()) {
+      if (!next.managedByDesktop && !next.ownerToken.trim()) {
         throw new Error("Owner token 不能为空");
       }
       const securityError = serverUrlSecurityError(next.serverUrl);
@@ -370,7 +384,7 @@ export function PocketProvider({ children }: PropsWithChildren) {
 
   const testConnection = useCallback(
     async (candidate = settings) => {
-      if (!candidate.ownerToken.trim()) {
+      if (!candidate.managedByDesktop && !candidate.ownerToken.trim()) {
         throw new Error("请先填写 Owner token");
       }
       const candidateApi = createPocketApi(candidate);

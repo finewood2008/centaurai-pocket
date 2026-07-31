@@ -13,6 +13,7 @@ import {
 import { Screen } from "@/components/screen";
 import { Button, Notice, Pill } from "@/components/ui";
 import { usePocket } from "@/context/pocket-context";
+import { selectDesktopFolder } from "@/lib/desktop-bridge";
 import { isAbsoluteServerPath } from "@/lib/source-input";
 import type { FolderSourceSchedule } from "@/lib/types";
 import { colors, radii } from "@/theme/colors";
@@ -29,7 +30,8 @@ const schedules: {
 
 export default function AddSourceScreen() {
   const router = useRouter();
-  const { ready, isConfigured, queueFolderSource } = usePocket();
+  const { ready, isConfigured, queueFolderSource, settings } = usePocket();
+  const desktopManaged = settings.managedByDesktop === true;
   const [displayName, setDisplayName] = useState("");
   const [path, setPath] = useState("");
   const [schedule, setSchedule] =
@@ -41,6 +43,26 @@ export default function AddSourceScreen() {
   function close() {
     if (router.canGoBack()) router.back();
     else router.replace("/sources");
+  }
+
+  async function chooseDesktopFolder() {
+    setError(null);
+    try {
+      const selected = await selectDesktopFolder();
+      if (!selected) return;
+      setPath(selected);
+      if (!displayName.trim()) {
+        const folderName = selected
+          .replace(/[\\/]+$/, "")
+          .split(/[\\/]/)
+          .pop();
+        if (folderName) setDisplayName(folderName);
+      }
+    } catch (caught) {
+      setError(
+        caught instanceof Error ? caught.message : "无法打开目录选择器",
+      );
+    }
   }
 
   async function save() {
@@ -103,7 +125,9 @@ export default function AddSourceScreen() {
           <View style={styles.heroCopy}>
             <Text style={styles.heroTitle}>在服务端持续归集</Text>
             <Text style={styles.heroText}>
-              这里填写的是运行 Pocket 服务的电脑或 NAS 路径，不是手机本地目录。
+              {desktopManaged
+                ? "选择一个允许 Pocket 只读扫描的本机文件夹。"
+                : "这里填写的是运行 Pocket 服务的电脑或 NAS 路径，不是手机本地目录。"}
             </Text>
           </View>
         </View>
@@ -155,17 +179,34 @@ export default function AddSourceScreen() {
 
             <View style={styles.field}>
               <Text style={styles.label}>服务端绝对路径</Text>
-              <TextInput
-                value={path}
-                onChangeText={setPath}
-                autoCapitalize="none"
-                autoCorrect={false}
-                placeholder="/srv/personal-docs"
-                placeholderTextColor={colors.textDim}
-                style={styles.input}
-              />
+              <View style={styles.pathRow}>
+                <TextInput
+                  value={path}
+                  onChangeText={setPath}
+                  editable={!desktopManaged}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  placeholder={
+                    desktopManaged
+                      ? "点击右侧按钮授权文件夹"
+                      : "/srv/personal-docs"
+                  }
+                  placeholderTextColor={colors.textDim}
+                  style={[styles.input, styles.pathInput]}
+                />
+                {desktopManaged ? (
+                  <Button
+                    compact
+                    tone="secondary"
+                    label="选择文件夹"
+                    onPress={() => void chooseDesktopFolder()}
+                  />
+                ) : null}
+              </View>
               <Text style={styles.help}>
-                支持 Linux/macOS 绝对路径、Windows 盘符路径或 UNC 网络路径。
+                {desktopManaged
+                  ? "只有通过系统目录选择器明确授权的路径才能创建同步源。"
+                  : "支持 Linux/macOS 绝对路径、Windows 盘符路径或 UNC 网络路径。"}
               </Text>
             </View>
 
@@ -331,6 +372,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 13,
     paddingVertical: 12,
     fontSize: 13,
+  },
+  pathRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 9,
+  },
+  pathInput: {
+    flex: 1,
   },
   help: {
     color: colors.textDim,

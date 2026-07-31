@@ -1,4 +1,4 @@
-.PHONY: bootstrap dev test smoke api mobile
+.PHONY: bootstrap dev test smoke api mobile desktop desktop-install
 
 bootstrap:
 	./scripts/bootstrap.sh
@@ -17,3 +17,9 @@ api:
 
 mobile:
 	cd apps/mobile && npm run web
+
+desktop:
+	./scripts/build-desktop.sh
+
+desktop-install: desktop
+	./scripts/install-desktop-shortcut.sh

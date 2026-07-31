@@ -52,6 +52,7 @@ export type ConnectionSettings = {
   serverUrl: string;
   ownerToken: string;
   profileId: string;
+  managedByDesktop?: boolean;
 };
 
 export type TaskAction = "apply" | "skip" | "undo";

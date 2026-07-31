@@ -52,6 +52,10 @@ EXPO_PUBLIC_POCKET_API_URL=https://pocket.example.com
 Owner token 为必填项。原生端 token 保存到 SecureStore；Web 预览只能使用浏览器
 AsyncStorage，因此不应在共享浏览器中填写生产 token。
 
+Electron 封装是例外：其 Main process 每次启动生成随机会话 token，并通过受限
+IPC 代理 API，Renderer 不会收到 token，也不会把它写入 AsyncStorage。页面设置
+会显示“由 Electron 主进程安全管理”，服务地址和凭据字段不可编辑。
+
 未完成服务地址与 Owner token 配置时，采集、添加来源、治理和同步等真实写入都
 不会进入离线队列；分享保存被拒绝时不会清除当前系统分享 payload，配置完成后可
 返回继续保存。

@@ -47,6 +47,7 @@ function ReadySettingsScreen() {
     discardInactiveQueue,
     clearUnreadableQueue,
   } = usePocket();
+  const desktopManaged = settings.managedByDesktop === true;
   const [serverUrl, setServerUrl] = useState(settings.serverUrl);
   const [ownerToken, setOwnerToken] = useState(settings.ownerToken);
   const [tokenVisible, setTokenVisible] = useState(false);
@@ -69,6 +70,7 @@ function ReadySettingsScreen() {
         serverUrl,
         ownerToken,
         profileId: settings.profileId,
+        managedByDesktop: desktopManaged,
       });
       setResult({ kind: "success", message: "连接设置已安全保存" });
     } catch (error) {
@@ -89,6 +91,7 @@ function ReadySettingsScreen() {
         serverUrl,
         ownerToken: ownerToken.trim(),
         profileId: settings.profileId,
+        managedByDesktop: desktopManaged,
       });
       setResult({ kind: "success", message: "连接成功，私人数据中心可用" });
     } catch (error) {
@@ -204,7 +207,7 @@ function ReadySettingsScreen() {
   const attentionCount = mutations.filter(
     (mutation) => mutation.state === "needs-attention",
   ).length;
-  const tokenMissing = !ownerToken.trim();
+  const tokenMissing = !desktopManaged && !ownerToken.trim();
   const urlSecurityError = serverUrlSecurityError(serverUrl);
 
   return (
@@ -241,6 +244,7 @@ function ReadySettingsScreen() {
             <TextInput
               value={serverUrl}
               onChangeText={setServerUrl}
+              editable={!desktopManaged}
               autoCapitalize="none"
               autoCorrect={false}
               keyboardType="url"
@@ -249,8 +253,9 @@ function ReadySettingsScreen() {
               style={styles.input}
             />
             <Text style={styles.help}>
-              真机请填写电脑或 NAS 的局域网地址；请求目标：
-              {apiBaseUrl(serverUrl)}
+              {desktopManaged
+                ? `Electron 已自动连接本机服务：${apiBaseUrl(serverUrl)}`
+                : `真机请填写电脑或 NAS 的局域网地址；请求目标：${apiBaseUrl(serverUrl)}`}
             </Text>
             {urlSecurityError ? (
               <Text style={styles.requiredHelp}>{urlSecurityError}</Text>
@@ -263,27 +268,34 @@ function ReadySettingsScreen() {
             <Text style={styles.label}>Owner token</Text>
             <View style={styles.tokenRow}>
               <TextInput
-                value={ownerToken}
+                value={
+                  desktopManaged ? "由 Electron 主进程安全管理" : ownerToken
+                }
                 onChangeText={setOwnerToken}
+                editable={!desktopManaged}
                 autoCapitalize="none"
                 autoCorrect={false}
-                secureTextEntry={!tokenVisible}
+                secureTextEntry={!desktopManaged && !tokenVisible}
                 placeholder="粘贴首次启动生成的 owner-token"
                 placeholderTextColor={colors.textDim}
                 style={[styles.input, styles.tokenInput]}
               />
-              <Pressable
-                accessibilityRole="button"
-                onPress={() => setTokenVisible((visible) => !visible)}
-                style={styles.showButton}
-              >
-                <Text style={styles.showButtonText}>
-                  {tokenVisible ? "隐藏" : "显示"}
-                </Text>
-              </Pressable>
+              {!desktopManaged ? (
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => setTokenVisible((visible) => !visible)}
+                  style={styles.showButton}
+                >
+                  <Text style={styles.showButtonText}>
+                    {tokenVisible ? "隐藏" : "显示"}
+                  </Text>
+                </Pressable>
+              ) : null}
             </View>
             <Text style={styles.help}>
-              原生端存入 SecureStore；不会复用旧项目账号、密码或 JWT。
+              {desktopManaged
+                ? "随机 Owner 会话 token 只保留在 Electron 主进程与本地服务内存中，不会进入页面或浏览器存储。"
+                : "原生端存入 SecureStore；不会复用旧项目账号、密码或 JWT。"}
             </Text>
             {tokenMissing ? (
               <Text style={styles.requiredHelp}>
@@ -311,9 +323,11 @@ function ReadySettingsScreen() {
             />
             <Button
               style={styles.saveButton}
-              label="保存设置"
+              label={desktopManaged ? "桌面自动配置" : "保存设置"}
               loading={saving}
-              disabled={tokenMissing || Boolean(urlSecurityError)}
+              disabled={
+                desktopManaged || tokenMissing || Boolean(urlSecurityError)
+              }
               onPress={() => void save()}
             />
           </View>

@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <title>CentaurAI Pocket</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family:
+          Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+        background: #070b14;
+        color: #f3f7fb;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        min-height: 100vh;
+        margin: 0;
+        display: grid;
+        place-items: center;
+        background:
+          radial-gradient(circle at 25% 20%, #153b3b 0, transparent 34%),
+          radial-gradient(circle at 80% 75%, #26194a 0, transparent 36%),
+          #070b14;
+      }
+      main {
+        width: min(460px, calc(100vw - 48px));
+        padding: 48px;
+        border: 1px solid rgba(94, 234, 212, 0.17);
+        border-radius: 28px;
+        background: rgba(10, 17, 30, 0.82);
+        box-shadow: 0 28px 90px rgba(0, 0, 0, 0.42);
+        text-align: center;
+      }
+      .mark {
+        width: 76px;
+        height: 76px;
+        margin: 0 auto 24px;
+        display: grid;
+        place-items: center;
+        border-radius: 24px;
+        background: linear-gradient(145deg, #37dfc0, #8468f5);
+        color: #071018;
+        font-size: 25px;
+        font-weight: 900;
+        letter-spacing: -2px;
+      }
+      h1 {
+        margin: 0;
+        font-size: 25px;
+        letter-spacing: -0.02em;
+      }
+      p {
+        margin: 10px 0 28px;
+        color: #9db0c1;
+        font-size: 14px;
+      }
+      .track {
+        height: 4px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: #172637;
+      }
+      .bar {
+        width: 42%;
+        height: 100%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, #39e6c2, #a58bff);
+        animation: loading 1.2s ease-in-out infinite alternate;
+      }
+      @keyframes loading {
+        from {
+          transform: translateX(-90%);
+        }
+        to {
+          transform: translateX(230%);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="mark" aria-hidden="true">CA</div>
+      <h1>CentaurAI Pocket</h1>
+      <p>正在启动你的私人数据中心…</p>
+      <div class="track" aria-label="正在启动">
+        <div class="bar"></div>
+      </div>
+    </main>
+  </body>
+</html>

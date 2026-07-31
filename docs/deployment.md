@@ -230,7 +230,8 @@ npm run export:web
 
 数据根只有 Pocket 自己使用。最简单的可靠备份方式：
 
-1. 停止 Pocket API，保证 SQLite WAL 已关闭。
+1. 退出 Electron 桌面应用并停止其他 Pocket API，保证 SQLite WAL 和桌面
+   profile 都不再写入。
 2. 完整复制 `~/.local/share/centaurai-pocket/` 到加密备份位置。
 3. 记录应用版本。
 4. 恢复时先在隔离目录验证，再替换目标数据根。
@@ -242,3 +243,61 @@ npm run export:web
 文件，但运行服务会忽略它，不应误当作当前凭据。
 
 Docker 部署的数据在 `centaurai-pocket-data` 命名卷中，不在宿主机默认数据根。应停服后对整个卷做加密备份，并同时验证恢复；不要只导出 SQLite 文件。
+
+## 9. Electron 桌面封装
+
+Linux 桌面版采用 Electron UI 与 PyInstaller `--onedir` API sidecar。构建过程
+不会安装系统软件，也不需要 root：
+
+```bash
+cd /home/user/centaurai-pocket
+./scripts/build-desktop.sh
+./scripts/install-desktop-shortcut.sh
+```
+
+产物位于：
+
+```text
+apps/desktop/release/linux-unpacked/
+```
+
+应用本体复制到版本化目录
+`~/.local/opt/centaurai-pocket/releases/<version-build>/`，原子更新的
+`~/.local/opt/centaurai-pocket/current` 指向当前版本。快捷方式安装到当前 XDG
+桌面目录，应用菜单安装到
+`~/.local/share/applications/ai.centaur.pocket.desktop`。这些内容都只属于
+当前用户，不会触发系统级 `.deb` 安装；源码仓库被移动后入口仍然有效。
+
+启动时 Electron 要求 8718 端口空闲；即使监听者声称自己是 Pocket API，也不会
+向它发送任何长期或会话 Owner 凭据，而是明确要求先停止已有服务。随后 Electron
+为本次启动生成随机会话 token，启动随包 sidecar 并固定绑定回环地址。该会话
+token 不写入数据库或浏览器存储，只在 Main process 与 sidecar 内存中存在；
+Renderer、LocalStorage 和 DevTools 不会收到它。应用退出时会终止自己管理的
+进程，Linux sidecar 还配置了 parent-death signal，主进程崩溃时由内核收尾。
+新增文件夹来源时必须使用桌面原生目录选择器；获准路径记录在
+`desktop-profile/approved-source-paths.json`（`0600`），Main 会拒绝 Renderer
+提交未经选择器批准的路径，并通过文件系统真实路径复核防止软链接改向。
+
+当前 CentaurOS/Ubuntu 的 AppArmor 策略限制便携 Chromium 的 user namespace，
+而用户目录中的 `chrome-sandbox` 也不是 `root:root 4755`，所以便携启动器使用
+`--no-sandbox`，Electron/Chromium 的进程级 sandbox 实际不生效。启动器强制
+要求已安装的 bubblewrap 提供外层文件系统约束，让系统其余目录只读，只放开
+Pocket 数据、会话运行目录与临时目录；但它仍共享网络、会话 socket 和 `/dev`，
+不能视为 Chromium sandbox 的等价替代。这一已知本地折中不需要 `sudo`、setuid
+安装或反复输入系统密码。没有 bubblewrap 时启动器会拒绝启动；正式跨机器分发
+应改为已签名的系统安装包，并正确配置 Chromium sandbox。
+
+验证入口：
+
+```bash
+desktop-file-validate \
+  ~/.local/share/applications/ai.centaur.pocket.desktop \
+  "$(xdg-user-dir DESKTOP)/CentaurAI-Pocket.desktop"
+gtk-launch ai.centaur.pocket.desktop
+curl http://127.0.0.1:8718/api/v1/health
+```
+
+桌面 API 日志位于
+`~/.local/share/centaurai-pocket/desktop-api.log`，Electron/bubblewrap 启动
+日志位于同目录的 `desktop-launcher.log`；两者都按 `0600` 创建。桌面封装不会
+改变默认数据库位置；删除快捷方式或 Electron 产物不会删除用户数据。

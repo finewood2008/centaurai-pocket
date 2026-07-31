@@ -17,6 +17,9 @@ CentaurAI Pocket 是一个全新、独立的单人私有数据中心。它不是
 - 只有 `ready` 数据可被 Agent 检索。
 - 独立的单一 Agent 只读 token，可查看前缀并立即轮换；无租户、角色、群组和审批流。
 - Expo 手机端：今日概览、治理卡片、同步源、连接设置、原生端加密离线操作队列，以及文字/网页 URL 的系统分享入口；Web 仅用于预览并使用浏览器本地存储。
+- Electron 桌面端：双击后自动启动本地 API，每次启动使用仅由主进程与 sidecar
+  持有的随机 Owner 会话 token，页面通过窄范围 IPC 操作；无需 Docker、终端或
+  重复输入系统密码。
 
 ## 产品边界
 
@@ -34,7 +37,8 @@ CentaurAI Pocket 是一个全新、独立的单人私有数据中心。它不是
 - Agent Gateway 预留：`127.0.0.1:8720`（MVP 不监听；REST 与 MCP 均由 8718 提供）
 - API 前缀：`/api/v1`
 - 默认数据目录：`~/.local/share/centaurai-pocket`
-- App ID：`ai.centaur.pocket`
+- 移动 App ID：`ai.centaur.pocket`
+- Electron Desktop App ID：`ai.centaur.pocket.desktop`
 - URL Scheme：`centaur-pocket`
 - 本地存储前缀：`centaur-pocket-*`
 
@@ -45,6 +49,7 @@ CentaurAI Pocket 是一个全新、独立的单人私有数据中心。它不是
 ```text
 centaurai-pocket/
 ├── apps/mobile/          # Expo iOS / Android / Web 客户端
+├── apps/desktop/         # Electron 桌面壳与本地 sidecar 管理
 ├── services/api/         # FastAPI、SQLite、同步与 Agent API
 ├── docs/                 # 产品、架构、接口与隔离说明
 └── scripts/              # 本地开发和验证脚本
@@ -76,6 +81,18 @@ npm run web
 ./scripts/bootstrap.sh
 ./scripts/dev.sh
 ```
+
+Electron 桌面版构建与快捷方式：
+
+```bash
+make desktop
+make desktop-install
+gtk-launch ai.centaur.pocket.desktop
+```
+
+桌面版自动连接 `127.0.0.1:8718`，不需要在页面里复制 Owner token；关闭窗口时
+会停止由它启动的 API。为避免把会话凭据交给非受管进程，启动前若 8718 已被任何
+服务占用，桌面版会明确拒绝接管。
 
 完整静态验证和真实 HTTP/MCP 冒烟测试：
 

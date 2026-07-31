@@ -17,6 +17,9 @@ web-build/
 .turbo/
 coverage/
 npm-debug.log*
+apps/desktop/release/
+apps/desktop/vendor/
+apps/desktop/.pyinstaller/
 
 # Runtime data and secrets
 .env

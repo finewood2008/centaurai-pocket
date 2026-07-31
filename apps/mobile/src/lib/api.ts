@@ -6,6 +6,10 @@ import type {
   GovernanceTaskKind,
   SourceStatus,
 } from "@/lib/types";
+import {
+  getDesktopBridge,
+  isDesktopApiResponse,
+} from "@/lib/desktop-bridge";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -276,6 +280,31 @@ export function createPocketApi(settings: ConnectionSettings) {
     const normalizedPath = path.startsWith("/") ? path : `/${path}`;
 
     try {
+      const desktopBridge = getDesktopBridge();
+      if (desktopBridge) {
+        const desktopResponse = await desktopBridge.request({
+          path: normalizedPath,
+          method,
+          body,
+          idempotencyKey,
+          timeoutMs,
+        });
+        if (!isDesktopApiResponse(desktopResponse)) {
+          throw new ApiError("桌面主进程返回了无效响应");
+        }
+        if (!desktopResponse.ok) {
+          const message =
+            isRecord(desktopResponse.payload) &&
+            typeof desktopResponse.payload.detail === "string"
+              ? desktopResponse.payload.detail
+              : desktopResponse.status === null
+                ? "无法连接本地数据服务"
+                : `服务返回 ${desktopResponse.status}`;
+          throw new ApiError(message, desktopResponse.status);
+        }
+        return desktopResponse.payload as T;
+      }
+
       const response = await fetch(`${baseUrl}${normalizedPath}`, {
         method,
         headers: {

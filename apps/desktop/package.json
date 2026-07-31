@@ -1,0 +1,77 @@
+{
+  "name": "centaurai-pocket-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CentaurAI Pocket Electron desktop shell",
+  "main": "main.cjs",
+  "author": "CentaurAI",
+  "license": "UNLICENSED",
+  "scripts": {
+    "start": "electron .",
+    "check": "node --check main.cjs && node --check preload.cjs && node --check runtime.cjs",
+    "test": "node --test test/*.test.cjs",
+    "pack:dir": "electron-builder --linux dir",
+    "dist:appimage": "electron-builder --linux AppImage"
+  },
+  "devDependencies": {
+    "electron": "43.2.0",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "ai.centaur.pocket.desktop",
+    "productName": "CentaurAI Pocket",
+    "artifactName": "CentaurAI-Pocket-${version}-${arch}.${ext}",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.cjs",
+      "preload.cjs",
+      "runtime.cjs",
+      "assets/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../mobile/dist",
+        "to": "web",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "vendor/backend/centaur-pocket-api",
+        "to": "backend",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "../mobile/assets/icon.png",
+        "to": "assets/icon.png"
+      }
+    ],
+    "linux": {
+      "target": [
+        "dir"
+      ],
+      "category": "Utility",
+      "executableName": "centaurai-pocket",
+      "icon": "../mobile/assets/icon.png",
+      "synopsis": "半人马随身数据中心",
+      "description": "单人私有数据同步、轻量治理与 Agent 数据服务",
+      "desktop": {
+        "entry": {
+          "Name": "CentaurAI Pocket",
+          "Comment": "半人马随身数据中心",
+          "Categories": "Utility;",
+          "Keywords": "CentaurAI;AI;Data;Governance;Private;",
+          "StartupWMClass": "centaurai-pocket",
+          "Terminal": "false",
+          "Type": "Application"
+        }
+      }
+    }
+  }
+}
