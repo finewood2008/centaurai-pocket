@@ -26,6 +26,7 @@ def client(tmp_path: Path) -> TestClient:
         owner_token=OWNER_TOKEN,
         agent_token=AGENT_TOKEN,
         scheduler_poll_seconds=0,
+        task_execution_public_origin="https://tasks.example.test",
     )
     with TestClient(create_app(settings)) as test_client:
         yield test_client

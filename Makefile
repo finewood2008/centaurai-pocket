@@ -1,4 +1,4 @@
-.PHONY: bootstrap dev test smoke api mobile mobile-web mobile-verify desktop desktop-install
+.PHONY: bootstrap dev test smoke api mobile mobile-web mobile-verify desktop desktop-install observer-check observer-native-install observer-native-uninstall
 
 bootstrap:
 	./scripts/bootstrap.sh
@@ -29,3 +29,13 @@ desktop:
 
 desktop-install: desktop
 	./scripts/install-desktop-shortcut.sh
+
+observer-check:
+	cd apps/wechat-observer-extension && npm run check && npm test
+	python3 -m unittest discover -s tools/native-host/tests -v
+
+observer-native-install:
+	./tools/native-host/install-native-host.sh
+
+observer-native-uninstall:
+	./tools/native-host/uninstall-native-host.sh

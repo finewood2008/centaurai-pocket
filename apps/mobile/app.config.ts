@@ -4,7 +4,7 @@ const config: ExpoConfig = {
   name: "半人马随身数据中心",
   slug: "centaurai-pocket",
   scheme: "centaur-pocket",
-  version: "0.1.0",
+  version: "0.3.0",
   icon: "./assets/icon.png",
   orientation: "portrait",
   userInterfaceStyle: "light",
@@ -12,7 +12,7 @@ const config: ExpoConfig = {
   primaryColor: "#C0755A",
   ios: {
     bundleIdentifier: "ai.centaur.pocket",
-    buildNumber: "1",
+    buildNumber: "3",
     supportsTablet: false,
     config: {
       usesNonExemptEncryption: false,
@@ -20,7 +20,7 @@ const config: ExpoConfig = {
   },
   android: {
     package: "ai.centaur.pocket",
-    versionCode: 1,
+    versionCode: 3,
     allowBackup: false,
     blockedPermissions: [
       "android.permission.READ_EXTERNAL_STORAGE",

@@ -48,6 +48,76 @@ export type DataSource = {
   errorMessage: string | null;
 };
 
+export type WechatObserverState =
+  | "extension_missing"
+  | "awaiting_pairing"
+  | "login_required"
+  | "awaiting_phone_confirm"
+  | "active"
+  | "capture_paused"
+  | "browser_offline"
+  | "parser_degraded"
+  | "account_rejected"
+  | "unknown";
+
+export type WechatObserverStatus = {
+  state: WechatObserverState;
+  extensionVersion: string | null;
+  parserVersion: string | null;
+  currentConversationId: string | null;
+  currentConversationName: string | null;
+  lastHeartbeatAt: string | null;
+  lastEventAt: string | null;
+  unreadConversationCount: number;
+  conversationCount: number;
+  messageCount: number;
+  openGapCount: number;
+  coverageNotice: string | null;
+  paused: boolean;
+};
+
+export type SourceCoverageGap = {
+  id: string;
+  kind: string;
+  startedAt: string | null;
+  endedAt: string | null;
+  details: string | null;
+};
+
+export type SourceCoverageGaps = {
+  items: SourceCoverageGap[];
+  total: number;
+};
+
+export type SourcePairing = {
+  id: string;
+  sourceId: string;
+  pairingCode: string;
+  expiresAt: string | null;
+  createdAt: string | null;
+};
+
+export type MobilePairing = {
+  id: string;
+  code: string;
+  expiresAt: string | null;
+  createdAt: string | null;
+};
+
+export type MobileDeviceStatus = "active" | "revoked" | "expired" | "unknown";
+
+export type MobileDevice = {
+  id: string;
+  deviceId: string;
+  displayName: string;
+  platform: string;
+  appVersion: string;
+  status: MobileDeviceStatus;
+  lastSeenAt: string | null;
+  createdAt: string | null;
+  revokedAt: string | null;
+};
+
 export type ConnectionSettings = {
   serverUrl: string;
   ownerToken: string;

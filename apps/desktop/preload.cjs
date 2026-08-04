@@ -9,5 +9,6 @@ contextBridge.exposeInMainWorld(
       ipcRenderer.invoke("centaur-pocket:get-bootstrap-settings"),
     request: (input) => ipcRenderer.invoke("centaur-pocket:api-request", input),
     selectFolder: () => ipcRenderer.invoke("centaur-pocket:select-folder"),
+    openWechatWeb: () => ipcRenderer.invoke("centaur-pocket:open-wechat-web"),
   }),
 );

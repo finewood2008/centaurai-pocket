@@ -8,6 +8,7 @@ const {
   Menu,
   protocol,
   session,
+  shell,
 } = require("electron");
 const { spawn } = require("node:child_process");
 const crypto = require("node:crypto");
@@ -16,7 +17,10 @@ const os = require("node:os");
 const path = require("node:path");
 
 const {
+  WECHAT_WEB_URL,
+  buildSidecarEnvironment,
   contentTypeFor,
+  desktopPortalOpenUriArgs,
   isPocketHealth,
   normalizeApiRequest,
   resolveContentPath,
@@ -60,6 +64,71 @@ let apiLogHandle = null;
 let apiOwnerToken = "";
 let mainWindow = null;
 let quitting = false;
+
+function openExternalWithDesktopPortal(url, timeoutMs = 10000) {
+  return new Promise((resolve, reject) => {
+    const command = "/usr/bin/gdbus";
+    let stderr = "";
+    let settled = false;
+    let timer = null;
+    let child;
+
+    function finish(error) {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      if (error) reject(error);
+      else resolve();
+    }
+
+    try {
+      child = spawn(command, desktopPortalOpenUriArgs(url), {
+        stdio: ["ignore", "ignore", "pipe"],
+        windowsHide: true,
+      });
+    } catch (error) {
+      finish(error);
+      return;
+    }
+
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk) => {
+      stderr = `${stderr}${chunk}`.slice(-4096);
+    });
+    child.once("error", (error) => finish(error));
+    child.once("close", (code, signal) => {
+      if (code === 0) {
+        finish();
+        return;
+      }
+      const detail = stderr.trim() || `退出码 ${code ?? "未知"}${signal ? `，信号 ${signal}` : ""}`;
+      finish(new Error(`系统桌面门户未能打开网页：${detail}`));
+    });
+    timer = setTimeout(() => {
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        // The portal helper already exited.
+      }
+      finish(new Error("系统桌面门户打开网页超时"));
+    }, timeoutMs);
+  });
+}
+
+async function openWechatWeb() {
+  if (process.platform === "linux") {
+    try {
+      await openExternalWithDesktopPortal(WECHAT_WEB_URL);
+      return;
+    } catch (portalError) {
+      console.warn(
+        "CentaurAI Pocket 无法通过桌面门户打开微信网页，尝试系统默认方式。",
+        portalError,
+      );
+    }
+  }
+  await shell.openExternal(WECHAT_WEB_URL, { activate: true });
+}
 
 function dataRoot() {
   const configured = process.env.CENTAURAI_POCKET_DATA_DIR?.trim();
@@ -125,6 +194,7 @@ function rememberApprovedSourcePath(sourcePath) {
 function assertSourcePathApproved(request) {
   if (request.method !== "POST" || request.path !== "/sources") return;
   const body = request.body;
+  if (body?.kind === "wechat_visible_web") return;
   const sourcePath = normalizeSourcePath(body?.config?.path);
   if (
     body?.kind !== "folder" ||
@@ -284,16 +354,12 @@ function startApiChild(sessionOwnerToken) {
     throw new Error(`桌面数据服务不存在：${command.executable}`);
   }
 
-  const environment = { ...process.env };
-  delete environment.PYTHONHOME;
-  delete environment.PYTHONPATH;
-  environment.CENTAURAI_POCKET_DATA_DIR = root;
-  environment.CENTAURAI_POCKET_HOST = "127.0.0.1";
-  environment.CENTAURAI_POCKET_PORT = "8718";
-  environment.CENTAURAI_POCKET_OWNER_TOKEN = sessionOwnerToken;
   const readyNonce = crypto.randomBytes(32).toString("base64url");
-  environment.CENTAURAI_POCKET_DESKTOP_NONCE = readyNonce;
-  environment.CENTAURAI_POCKET_DESKTOP_READY_FD = "3";
+  const environment = buildSidecarEnvironment(process.env, {
+    dataRoot: root,
+    sessionOwnerToken,
+    readyNonce,
+  });
 
   apiChild = spawn(command.executable, command.args, {
     cwd: command.cwd,
@@ -542,6 +608,11 @@ function registerIpc() {
     });
     if (result.canceled || result.filePaths.length !== 1) return null;
     return rememberApprovedSourcePath(result.filePaths[0]);
+  });
+  ipcMain.handle("centaur-pocket:open-wechat-web", async (event) => {
+    assertTrustedSender(event);
+    await openWechatWeb();
+    return true;
   });
 }
 

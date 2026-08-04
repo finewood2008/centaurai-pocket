@@ -20,6 +20,14 @@ echo "验证 Pocket Mobile…"
   npm run export:web
 )
 
+echo "验证微信网页观察器…"
+(
+  cd "${project_root}/apps/wechat-observer-extension"
+  npm run check
+  npm test
+)
+python3 -m unittest discover -s "${project_root}/tools/native-host/tests" -v
+
 if [[ -d "${project_root}/apps/desktop/node_modules" ]]; then
   echo "验证 Pocket Desktop…"
   (

@@ -9,6 +9,8 @@ icon_source="${project_root}/apps/mobile/assets/icon.svg"
 desktop_filename="ai.centaur.pocket.desktop"
 packaged_application="${desktop_root}/release/linux-unpacked"
 installed_root="${HOME}/.local/opt/centaurai-pocket"
+pocket_data_root="${CENTAURAI_POCKET_DATA_DIR:-${HOME}/.local/share/centaurai-pocket}"
+task_execution_origin_file="${pocket_data_root}/task-execution-public-origin"
 
 if [[ ! -x "${packaged_application}/centaurai-pocket" ]]; then
   echo "尚未找到封装后的 Electron 应用，请先运行 scripts/build-desktop.sh。" >&2
@@ -55,7 +57,46 @@ mkdir -p \
   "${desktop_directory}" \
   "${applications_directory}" \
   "${icons_directory}" \
+  "${pocket_data_root}" \
   "${release_root}/release/linux-unpacked"
+chmod 0700 "${pocket_data_root}" 2>/dev/null || true
+
+if [[ -n "${CENTAURAI_POCKET_TASK_EXECUTION_PUBLIC_ORIGIN:-}" ]]; then
+  canonical_task_execution_origin="$(
+    TASK_EXECUTION_ORIGIN="${CENTAURAI_POCKET_TASK_EXECUTION_PUBLIC_ORIGIN}" \
+      node <<'NODE'
+const value = process.env.TASK_EXECUTION_ORIGIN ?? "";
+let parsed;
+try {
+  parsed = new URL(value);
+} catch {
+  process.exit(1);
+}
+if (
+  parsed.protocol !== "https:" ||
+  parsed.username ||
+  parsed.password ||
+  (parsed.pathname !== "/" && parsed.pathname !== "") ||
+  parsed.search ||
+  parsed.hash ||
+  value.replace(/\/$/, "") !== parsed.origin ||
+  /:443\/?$/.test(value)
+) {
+  process.exit(1);
+}
+process.stdout.write(parsed.origin);
+NODE
+  )" || {
+    echo "CENTAURAI_POCKET_TASK_EXECUTION_PUBLIC_ORIGIN 必须是规范 HTTPS Origin。" >&2
+    exit 1
+  }
+  temporary_origin_file="$(mktemp "${pocket_data_root}/.task-execution-origin.XXXXXX")"
+  trap 'rm -f "${temporary_origin_file}"' EXIT
+  printf '%s\n' "${canonical_task_execution_origin}" >"${temporary_origin_file}"
+  chmod 0600 "${temporary_origin_file}"
+  mv -f "${temporary_origin_file}" "${task_execution_origin_file}"
+  trap - EXIT
+fi
 cp -a "${packaged_application}/." "${release_root}/release/linux-unpacked/"
 install -m 0755 "${source_launcher}" "${release_root}/launch-portable.sh"
 test -x "${release_root}/release/linux-unpacked/centaurai-pocket"

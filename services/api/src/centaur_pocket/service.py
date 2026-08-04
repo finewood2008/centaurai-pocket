@@ -15,7 +15,8 @@ from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
 from .database import Database
-from .schemas import FolderSourceConfig
+from .im_knowledge import extract_knowledge_candidates
+from .schemas import FolderSourceConfig, WechatVisibleWebConfig
 
 TEXT_EXTENSIONS = {
     ".c",
@@ -49,6 +50,13 @@ TEXT_EXTENSIONS = {
     ".yml",
 }
 
+COLLECTOR_REQUESTS_PER_MINUTE = 120
+OBSERVER_HEARTBEAT_GAP_SECONDS = 60
+MOBILE_PAIRING_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+MOBILE_PAIRING_TTL_SECONDS = 10 * 60
+MOBILE_ACCESS_TTL_SECONDS = 15 * 60
+MOBILE_REFRESH_TTL_SECONDS = 30 * 24 * 60 * 60
+
 
 class PocketError(Exception):
     def __init__(self, status_code: int, detail: str):
@@ -67,6 +75,29 @@ def utc_from_timestamp(timestamp: float) -> str:
         .isoformat(timespec="seconds")
         .replace("+00:00", "Z")
     )
+
+
+def utc_after(seconds: int) -> str:
+    return (
+        (datetime.now(UTC) + timedelta(seconds=seconds))
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z")
+    )
+
+
+def format_utc(value: datetime) -> str:
+    return value.astimezone(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def constant_time_text_equal(left: str, right: str) -> bool:
+    return secrets.compare_digest(left.encode("utf-8"), right.encode("utf-8"))
+
+
+def parse_utc(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def new_id(prefix: str) -> str:
@@ -90,25 +121,460 @@ class PocketService:
         owner_token: str,
         agent_token: str,
         max_file_bytes: int,
+        desktop_session_token: str | None = None,
     ):
         self.database = database
         self.owner_token = owner_token
         self.agent_token = agent_token
+        self.desktop_session_token = desktop_session_token
         self.max_file_bytes = max_file_bytes
+        # Imported lazily to keep the reliable-feed network/parser module able
+        # to reuse PocketError without creating a module import cycle.
+        from .reliable_sources import ReliableSourceService
+
+        self.reliable_sources = ReliableSourceService(database)
+        self.outlook_mail: Any | None = None
 
     def initialize(self) -> None:
         self.database.initialize()
 
+    def attach_outlook_mail(self, outlook_mail: Any) -> None:
+        self.outlook_mail = outlook_mail
+
     def owner_token_matches(self, candidate: str) -> bool:
-        return secrets.compare_digest(candidate, self.owner_token)
+        if constant_time_text_equal(candidate, self.owner_token):
+            return True
+        return bool(
+            self.desktop_session_token
+            and constant_time_text_equal(candidate, self.desktop_session_token)
+        )
 
     def agent_token_matches(self, candidate: str) -> bool:
-        return secrets.compare_digest(candidate, self.agent_token)
+        return constant_time_text_equal(candidate, self.agent_token)
 
     def replace_agent_token(self, token: str) -> None:
         if not token.startswith("cp_live_"):
             raise ValueError("invalid CentaurAI Pocket Agent token")
         self.agent_token = token
+
+    # Mobile pairing and short-lived device sessions
+
+    @staticmethod
+    def _new_mobile_pairing_code() -> str:
+        compact = "".join(secrets.choice(MOBILE_PAIRING_ALPHABET) for _ in range(12))
+        return "-".join(compact[index : index + 4] for index in range(0, 12, 4))
+
+    @staticmethod
+    def _normalize_mobile_pairing_code(value: str) -> str:
+        compact = "".join(
+            character
+            for character in value.upper()
+            if character not in "- \t\r\n"
+        )
+        if len(compact) != 12 or any(
+            character not in MOBILE_PAIRING_ALPHABET for character in compact
+        ):
+            raise PocketError(401, "配对码无效或已失效")
+        return "-".join(compact[index : index + 4] for index in range(0, 12, 4))
+
+    @staticmethod
+    def _new_mobile_tokens() -> tuple[str, str]:
+        return (
+            f"cp_device_{secrets.token_urlsafe(32)}",
+            f"cp_refresh_{secrets.token_urlsafe(32)}",
+        )
+
+    @staticmethod
+    def _mobile_device_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "device_id": row["device_id"],
+            "display_name": row["display_name"],
+            "platform": row["platform"],
+            "app_version": row["app_version"],
+            "status": "revoked" if row["revoked_at"] is not None else "active",
+            "last_seen_at": row["last_seen_at"],
+            "created_at": row["created_at"],
+        }
+
+    def _mobile_session_payload(
+        self,
+        device: sqlite3.Row,
+        *,
+        access_token: str,
+        access_expires_at: str,
+        refresh_token: str,
+        refresh_expires_at: str,
+    ) -> dict[str, Any]:
+        return {
+            "token_type": "Bearer",
+            "access_token": access_token,
+            "access_expires_at": access_expires_at,
+            "refresh_token": refresh_token,
+            "refresh_expires_at": refresh_expires_at,
+            "device": self._mobile_device_to_dict(device),
+        }
+
+    def create_mobile_pairing(self) -> dict[str, str]:
+        with self.database.transaction() as connection:
+            created_at_dt = datetime.now(UTC)
+            created_at = format_utc(created_at_dt)
+            expires_at = format_utc(
+                created_at_dt + timedelta(seconds=MOBILE_PAIRING_TTL_SECONDS)
+            )
+            for _attempt in range(5):
+                pairing_id = new_id("mpair")
+                code = self._new_mobile_pairing_code()
+                try:
+                    connection.execute(
+                        """
+                        INSERT INTO mobile_pairings(
+                            id, code_hash, created_at, expires_at
+                        ) VALUES (?, ?, ?, ?)
+                        """,
+                        (
+                            pairing_id,
+                            self._secret_hash(code),
+                            created_at,
+                            expires_at,
+                        ),
+                    )
+                except sqlite3.IntegrityError:
+                    continue
+                break
+            else:
+                raise PocketError(503, "暂时无法创建手机配对码")
+            self._record_activity(
+                connection,
+                kind="mobile.pairing_created",
+                message="已创建一次性手机配对码",
+                resource_type="mobile_pairing",
+                resource_id=pairing_id,
+            )
+        return {
+            "pairing_id": pairing_id,
+            "code": code,
+            "expires_at": expires_at,
+        }
+
+    def claim_mobile_pairing(self, payload: dict[str, str]) -> dict[str, Any]:
+        code = self._normalize_mobile_pairing_code(payload["code"])
+        code_hash = self._secret_hash(code)
+        access_token, refresh_token = self._new_mobile_tokens()
+        access_hash = self._secret_hash(access_token)
+        refresh_hash = self._secret_hash(refresh_token)
+
+        with self.database.transaction() as connection:
+            now_dt = datetime.now(UTC)
+            now = format_utc(now_dt)
+            access_expires_at = format_utc(
+                now_dt + timedelta(seconds=MOBILE_ACCESS_TTL_SECONDS)
+            )
+            refresh_expires_at = format_utc(
+                now_dt + timedelta(seconds=MOBILE_REFRESH_TTL_SECONDS)
+            )
+            pairing = connection.execute(
+                "SELECT * FROM mobile_pairings WHERE code_hash = ?",
+                (code_hash,),
+            ).fetchone()
+            if (
+                pairing is None
+                or not secrets.compare_digest(pairing["code_hash"], code_hash)
+                or pairing["claimed_at"] is not None
+                or parse_utc(pairing["expires_at"]) <= now_dt
+            ):
+                raise PocketError(401, "配对码无效或已失效")
+
+            device = connection.execute(
+                "SELECT * FROM mobile_devices WHERE device_id = ?",
+                (payload["device_id"],),
+            ).fetchone()
+            if device is None:
+                mobile_device_id = new_id("mdev")
+                connection.execute(
+                    """
+                    INSERT INTO mobile_devices(
+                        id, device_id, display_name, platform, app_version,
+                        created_at, updated_at, last_seen_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        mobile_device_id,
+                        payload["device_id"],
+                        payload["display_name"],
+                        payload["platform"],
+                        payload["app_version"],
+                        now,
+                        now,
+                        now,
+                    ),
+                )
+            else:
+                mobile_device_id = device["id"]
+                connection.execute(
+                    """
+                    UPDATE mobile_sessions
+                    SET revoked_at = COALESCE(revoked_at, ?)
+                    WHERE mobile_device_id = ?
+                    """,
+                    (now, mobile_device_id),
+                )
+                connection.execute(
+                    """
+                    UPDATE mobile_devices
+                    SET display_name = ?, platform = ?, app_version = ?,
+                        updated_at = ?, last_seen_at = ?, revoked_at = NULL
+                    WHERE id = ?
+                    """,
+                    (
+                        payload["display_name"],
+                        payload["platform"],
+                        payload["app_version"],
+                        now,
+                        now,
+                        mobile_device_id,
+                    ),
+                )
+
+            claimed = connection.execute(
+                """
+                UPDATE mobile_pairings
+                SET claimed_at = ?, claimed_device_id = ?
+                WHERE id = ? AND claimed_at IS NULL
+                """,
+                (now, mobile_device_id, pairing["id"]),
+            )
+            if claimed.rowcount != 1:
+                raise PocketError(401, "配对码无效或已失效")
+
+            connection.execute(
+                """
+                INSERT INTO mobile_sessions(
+                    id, mobile_device_id, access_token_hash,
+                    access_expires_at, refresh_token_hash,
+                    refresh_expires_at, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    new_id("msess"),
+                    mobile_device_id,
+                    access_hash,
+                    access_expires_at,
+                    refresh_hash,
+                    refresh_expires_at,
+                    now,
+                ),
+            )
+            self._record_activity(
+                connection,
+                kind="mobile.device_paired",
+                message=f"手机设备“{payload['display_name']}”已配对",
+                resource_type="mobile_device",
+                resource_id=mobile_device_id,
+            )
+            device = connection.execute(
+                "SELECT * FROM mobile_devices WHERE id = ?",
+                (mobile_device_id,),
+            ).fetchone()
+            assert device is not None
+
+        return self._mobile_session_payload(
+            device,
+            access_token=access_token,
+            access_expires_at=access_expires_at,
+            refresh_token=refresh_token,
+            refresh_expires_at=refresh_expires_at,
+        )
+
+    def refresh_mobile_session(
+        self, refresh_token: str, device_id: str
+    ) -> dict[str, Any]:
+        if (
+            not refresh_token.startswith("cp_refresh_")
+            or len(refresh_token) > 512
+        ):
+            raise PocketError(401, "手机会话凭据无效或已过期")
+        refresh_hash = self._secret_hash(refresh_token)
+        new_access_token, new_refresh_token = self._new_mobile_tokens()
+
+        with self.database.transaction() as connection:
+            now_dt = datetime.now(UTC)
+            now = format_utc(now_dt)
+            access_expires_at = format_utc(
+                now_dt + timedelta(seconds=MOBILE_ACCESS_TTL_SECONDS)
+            )
+            refresh_expires_at = format_utc(
+                now_dt + timedelta(seconds=MOBILE_REFRESH_TTL_SECONDS)
+            )
+            session = connection.execute(
+                """
+                SELECT session.*
+                FROM mobile_sessions session
+                WHERE session.refresh_token_hash = ?
+                """,
+                (refresh_hash,),
+            ).fetchone()
+            if (
+                session is None
+                or not secrets.compare_digest(
+                    session["refresh_token_hash"], refresh_hash
+                )
+                or session["revoked_at"] is not None
+                or parse_utc(session["refresh_expires_at"]) <= now_dt
+            ):
+                raise PocketError(401, "手机会话凭据无效或已过期")
+            device = connection.execute(
+                "SELECT * FROM mobile_devices WHERE id = ?",
+                (session["mobile_device_id"],),
+            ).fetchone()
+            if (
+                device is None
+                or device["revoked_at"] is not None
+                or not constant_time_text_equal(device["device_id"], device_id)
+            ):
+                raise PocketError(401, "手机会话凭据无效或已过期")
+
+            revoked = connection.execute(
+                """
+                UPDATE mobile_sessions
+                SET revoked_at = ?, last_used_at = ?
+                WHERE id = ? AND revoked_at IS NULL
+                """,
+                (now, now, session["id"]),
+            )
+            if revoked.rowcount != 1:
+                raise PocketError(401, "手机会话凭据无效或已过期")
+            connection.execute(
+                """
+                INSERT INTO mobile_sessions(
+                    id, mobile_device_id, access_token_hash,
+                    access_expires_at, refresh_token_hash,
+                    refresh_expires_at, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    new_id("msess"),
+                    device["id"],
+                    self._secret_hash(new_access_token),
+                    access_expires_at,
+                    self._secret_hash(new_refresh_token),
+                    refresh_expires_at,
+                    now,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE mobile_devices
+                SET last_seen_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (now, now, device["id"]),
+            )
+            device = connection.execute(
+                "SELECT * FROM mobile_devices WHERE id = ?",
+                (device["id"],),
+            ).fetchone()
+            assert device is not None
+
+        return self._mobile_session_payload(
+            device,
+            access_token=new_access_token,
+            access_expires_at=access_expires_at,
+            refresh_token=new_refresh_token,
+            refresh_expires_at=refresh_expires_at,
+        )
+
+    def authenticate_mobile_access(self, access_token: str) -> dict[str, Any]:
+        if not access_token.startswith("cp_device_") or len(access_token) > 512:
+            raise PocketError(401, "手机访问凭据无效或已过期")
+        access_hash = self._secret_hash(access_token)
+        with self.database.transaction() as connection:
+            now_dt = datetime.now(UTC)
+            now = format_utc(now_dt)
+            session = connection.execute(
+                "SELECT * FROM mobile_sessions WHERE access_token_hash = ?",
+                (access_hash,),
+            ).fetchone()
+            if (
+                session is None
+                or not secrets.compare_digest(
+                    session["access_token_hash"], access_hash
+                )
+                or session["revoked_at"] is not None
+                or parse_utc(session["access_expires_at"]) <= now_dt
+            ):
+                raise PocketError(401, "手机访问凭据无效或已过期")
+            device = connection.execute(
+                "SELECT * FROM mobile_devices WHERE id = ?",
+                (session["mobile_device_id"],),
+            ).fetchone()
+            if device is None or device["revoked_at"] is not None:
+                raise PocketError(401, "手机访问凭据无效或已过期")
+            connection.execute(
+                "UPDATE mobile_sessions SET last_used_at = ? WHERE id = ?",
+                (now, session["id"]),
+            )
+            connection.execute(
+                """
+                UPDATE mobile_devices
+                SET last_seen_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (now, now, device["id"]),
+            )
+            device = connection.execute(
+                "SELECT * FROM mobile_devices WHERE id = ?",
+                (device["id"],),
+            ).fetchone()
+            assert device is not None
+            return {
+                "token_type": "Bearer",
+                "access_expires_at": session["access_expires_at"],
+                "device": self._mobile_device_to_dict(device),
+            }
+
+    def list_mobile_devices(self) -> dict[str, Any]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM mobile_devices ORDER BY created_at DESC, id DESC"
+            ).fetchall()
+        return {
+            "items": [self._mobile_device_to_dict(row) for row in rows],
+            "total": len(rows),
+        }
+
+    def revoke_mobile_device(self, mobile_device_id: str) -> None:
+        now = utc_now()
+        with self.database.transaction() as connection:
+            device = connection.execute(
+                "SELECT * FROM mobile_devices WHERE id = ?",
+                (mobile_device_id,),
+            ).fetchone()
+            if device is None:
+                raise PocketError(404, "手机设备不存在")
+            connection.execute(
+                """
+                UPDATE mobile_devices
+                SET revoked_at = COALESCE(revoked_at, ?), updated_at = ?
+                WHERE id = ?
+                """,
+                (now, now, mobile_device_id),
+            )
+            connection.execute(
+                """
+                UPDATE mobile_sessions
+                SET revoked_at = COALESCE(revoked_at, ?)
+                WHERE mobile_device_id = ?
+                """,
+                (now, mobile_device_id),
+            )
+            self._record_activity(
+                connection,
+                kind="mobile.device_revoked",
+                message=f"已吊销手机设备“{device['display_name']}”",
+                resource_type="mobile_device",
+                resource_id=mobile_device_id,
+            )
 
     # Dashboard
 
@@ -233,23 +699,36 @@ class PocketService:
             if cached is not None:
                 return cached
 
-            normalized_config = FolderSourceConfig.model_validate(
-                payload["config"]
-            ).model_dump()
-            self._assert_unique_folder_path(connection, normalized_config["path"])
+            kind = payload["kind"]
+            if kind == "folder":
+                normalized_config = FolderSourceConfig.model_validate(
+                    payload["config"]
+                ).model_dump()
+                self._assert_unique_folder_path(
+                    connection, normalized_config["path"]
+                )
+                provider = None
+            elif kind == "wechat_visible_web":
+                normalized_config = WechatVisibleWebConfig.model_validate(
+                    payload["config"]
+                ).model_dump()
+                provider = "wechat_visible_web"
+            else:
+                raise PocketError(422, "不支持的数据源类型")
             source_id = new_id("src")
             now = utc_now()
             connection.execute(
                 """
                 INSERT INTO sources(
-                    id, kind, name, config_json, schedule, enabled,
+                    id, kind, provider, name, config_json, schedule, enabled,
                     created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     source_id,
-                    payload["kind"],
+                    kind,
+                    provider,
                     payload["display_name"].strip(),
                     json.dumps(normalized_config, ensure_ascii=False),
                     payload["schedule"],
@@ -288,18 +767,39 @@ class PocketService:
             return self.get_source(source_id)
         with self.database.transaction() as connection:
             current = self._get_source(connection, source_id)
+            if current["kind"] == "rss":
+                raise PocketError(
+                    409,
+                    "RSS 可靠信源只能通过 collection-plan 接口修改计划",
+                )
             values: dict[str, Any] = {}
             if "display_name" in updates:
                 values["name"] = updates["display_name"].strip()
             if "config" in updates:
-                config = FolderSourceConfig.model_validate(
-                    updates["config"]
-                ).model_dump()
-                self._assert_unique_folder_path(
-                    connection, config["path"], exclude_source_id=source_id
-                )
+                if current["kind"] == "folder":
+                    if "path" not in updates["config"]:
+                        raise PocketError(422, "文件夹数据源配置缺少 path")
+                    config = FolderSourceConfig.model_validate(
+                        updates["config"]
+                    ).model_dump()
+                    self._assert_unique_folder_path(
+                        connection, config["path"], exclude_source_id=source_id
+                    )
+                else:
+                    if "path" in updates["config"]:
+                        raise PocketError(422, "微信网页观察器不能使用文件夹配置")
+                    config = WechatVisibleWebConfig.model_validate(
+                        updates["config"]
+                    ).model_dump()
                 values["config_json"] = json.dumps(config, ensure_ascii=False)
             if "schedule" in updates:
+                expected_schedules = (
+                    {"manual", "hourly", "daily"}
+                    if current["kind"] == "folder"
+                    else {"continuous"}
+                )
+                if updates["schedule"] not in expected_schedules:
+                    raise PocketError(422, "该数据源不支持此同步计划")
                 values["schedule"] = updates["schedule"]
             if "enabled" in updates:
                 values["enabled"] = int(updates["enabled"])
@@ -321,6 +821,8 @@ class PocketService:
     def delete_source(self, source_id: str) -> None:
         with self.database.transaction() as connection:
             source = self._get_source(connection, source_id)
+            if source["kind"] == "rss":
+                raise PocketError(409, "RSS 可靠信源不能通过通用数据源接口删除")
             linked_item_ids = [
                 row["item_id"]
                 for row in connection.execute(
@@ -423,6 +925,7 @@ class PocketService:
             "id": row["id"],
             "kind": row["kind"],
             "type": row["kind"],
+            "provider": row["provider"],
             "display_name": row["name"],
             "name": row["name"],
             "config": json_loads(row["config_json"], {}),
@@ -433,6 +936,1338 @@ class PocketService:
             "pending_count": row["pending_count"],
             "last_sync_at": row["last_sync_at"],
             "last_error": row["last_error"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    # Visible Web IM observer
+
+    @staticmethod
+    def _secret_hash(value: str) -> str:
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _iso_utc(value: str | datetime | None, *, fallback: str | None = None) -> str:
+        if value is None:
+            return fallback or utc_now()
+        parsed = value if isinstance(value, datetime) else datetime.fromisoformat(value)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        parsed = parsed.astimezone(UTC)
+        if parsed > datetime.now(UTC) + timedelta(minutes=5):
+            raise PocketError(422, "客户端时间不能晚于服务器时间 5 分钟以上")
+        return parsed.isoformat(timespec="seconds").replace("+00:00", "Z")
+
+    @staticmethod
+    def _require_observer_source(
+        connection: sqlite3.Connection,
+        source_id: str,
+        *,
+        require_enabled: bool = False,
+    ) -> sqlite3.Row:
+        row = connection.execute(
+            "SELECT * FROM sources WHERE id = ?",
+            (source_id,),
+        ).fetchone()
+        if row is None:
+            raise PocketError(404, "数据源不存在")
+        if row["kind"] != "wechat_visible_web":
+            raise PocketError(409, "该接口只适用于微信网页观察器")
+        if require_enabled and not row["enabled"]:
+            raise PocketError(409, "观察器已暂停")
+        return row
+
+    def create_observer_pairing(
+        self, source_id: str, *, expires_in_seconds: int = 600
+    ) -> dict[str, Any]:
+        pairing_code = f"cp_pair_{secrets.token_urlsafe(32)}"
+        pairing_id = new_id("pair")
+        created_at = utc_now()
+        expires_at = (
+            datetime.now(UTC) + timedelta(seconds=expires_in_seconds)
+        ).isoformat(timespec="seconds").replace("+00:00", "Z")
+        with self.database.transaction() as connection:
+            self._require_observer_source(
+                connection, source_id, require_enabled=True
+            )
+            connection.execute(
+                """
+                UPDATE collector_pairings
+                SET revoked_at = ?
+                WHERE source_id = ? AND used_at IS NULL AND revoked_at IS NULL
+                """,
+                (created_at, source_id),
+            )
+            connection.execute(
+                """
+                INSERT INTO collector_pairings(
+                    id, source_id, code_hash, created_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    pairing_id,
+                    source_id,
+                    self._secret_hash(pairing_code),
+                    created_at,
+                    expires_at,
+                ),
+            )
+            self._record_activity(
+                connection,
+                kind="observer.pairing_created",
+                message="已创建微信网页观察器配对码",
+                resource_type="source",
+                resource_id=source_id,
+            )
+        # The plaintext is deliberately returned once and is never persisted.
+        return {
+            "id": pairing_id,
+            "source_id": source_id,
+            "pairing_code": pairing_code,
+            "created_at": created_at,
+            "expires_at": expires_at,
+        }
+
+    def revoke_observer_pairing(self, source_id: str, pairing_id: str) -> None:
+        now = utc_now()
+        with self.database.transaction() as connection:
+            self._require_observer_source(connection, source_id)
+            result = connection.execute(
+                """
+                UPDATE collector_pairings
+                SET revoked_at = COALESCE(revoked_at, ?)
+                WHERE id = ? AND source_id = ?
+                """,
+                (now, pairing_id, source_id),
+            )
+            if result.rowcount == 0:
+                raise PocketError(404, "配对记录不存在")
+
+    def collector_handshake(
+        self,
+        source_id: str,
+        pairing_code: str,
+        client: dict[str, Any],
+    ) -> dict[str, Any]:
+        now = utc_now()
+        collector_token = f"cp_collector_{secrets.token_urlsafe(32)}"
+        token_id = new_id("ctok")
+        with self.database.transaction() as connection:
+            self._require_observer_source(
+                connection, source_id, require_enabled=True
+            )
+            pairing = connection.execute(
+                """
+                SELECT * FROM collector_pairings
+                WHERE source_id = ? AND code_hash = ?
+                """,
+                (source_id, self._secret_hash(pairing_code)),
+            ).fetchone()
+            if (
+                pairing is None
+                or pairing["used_at"] is not None
+                or pairing["revoked_at"] is not None
+            ):
+                raise PocketError(401, "配对凭据无效")
+            if datetime.fromisoformat(pairing["expires_at"]) <= datetime.now(UTC):
+                raise PocketError(401, "配对凭据已过期")
+            connection.execute(
+                "UPDATE collector_pairings SET used_at = ? WHERE id = ?",
+                (now, pairing["id"]),
+            )
+            # One source has one active local observer. Re-pairing is an
+            # intentional credential rotation and revokes every older token.
+            connection.execute(
+                """
+                UPDATE collector_tokens SET revoked_at = ?
+                WHERE source_id = ? AND revoked_at IS NULL
+                """,
+                (now, source_id),
+            )
+            connection.execute(
+                """
+                INSERT INTO collector_tokens(
+                    id, source_id, token_hash, client_json, created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    token_id,
+                    source_id,
+                    self._secret_hash(collector_token),
+                    json.dumps(client, ensure_ascii=False, sort_keys=True),
+                    now,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO collector_rate_limits(
+                    token_id, window_started_at, request_count
+                ) VALUES (?, ?, 0)
+                """,
+                (token_id, now),
+            )
+            self._record_activity(
+                connection,
+                kind="observer.paired",
+                message="微信网页观察器已完成本机配对",
+                resource_type="source",
+                resource_id=source_id,
+            )
+        # Like the pairing code, this bearer credential is returned exactly
+        # once. Status/list endpoints never expose it or its stored hash.
+        return {
+            "source_id": source_id,
+            "collector_token": collector_token,
+            "token_type": "Bearer",
+        }
+
+    def authenticate_collector(
+        self, source_id: str, collector_token: str
+    ) -> dict[str, str]:
+        now_dt = datetime.now(UTC)
+        now = now_dt.isoformat(timespec="seconds").replace("+00:00", "Z")
+        with self.database.transaction() as connection:
+            token = connection.execute(
+                """
+                SELECT token.id, token.source_id, token.revoked_at, source.enabled,
+                       source.kind
+                FROM collector_tokens token
+                JOIN sources source ON source.id = token.source_id
+                WHERE token.token_hash = ?
+                """,
+                (self._secret_hash(collector_token),),
+            ).fetchone()
+            if (
+                token is None
+                or token["source_id"] != source_id
+                or token["revoked_at"] is not None
+                or token["kind"] != "wechat_visible_web"
+            ):
+                raise PocketError(401, "Collector 凭据无效")
+            if not token["enabled"]:
+                raise PocketError(409, "观察器已暂停")
+
+            rate = connection.execute(
+                "SELECT * FROM collector_rate_limits WHERE token_id = ?",
+                (token["id"],),
+            ).fetchone()
+            if rate is None:
+                count = 1
+                window_started_at = now
+            else:
+                window = datetime.fromisoformat(rate["window_started_at"])
+                if now_dt - window >= timedelta(minutes=1):
+                    count = 1
+                    window_started_at = now
+                else:
+                    count = int(rate["request_count"]) + 1
+                    window_started_at = rate["window_started_at"]
+            if count > COLLECTOR_REQUESTS_PER_MINUTE:
+                raise PocketError(429, "Collector 请求过于频繁，请稍后重试")
+            connection.execute(
+                """
+                INSERT INTO collector_rate_limits(
+                    token_id, window_started_at, request_count
+                ) VALUES (?, ?, ?)
+                ON CONFLICT(token_id) DO UPDATE SET
+                    window_started_at = excluded.window_started_at,
+                    request_count = excluded.request_count
+                """,
+                (token["id"], window_started_at, count),
+            )
+            connection.execute(
+                "UPDATE collector_tokens SET last_used_at = ? WHERE id = ?",
+                (now, token["id"]),
+            )
+            return {"token_id": token["id"], "source_id": source_id}
+
+    def record_observer_heartbeat(
+        self,
+        source_id: str,
+        collector: dict[str, str],
+        heartbeat: dict[str, Any],
+    ) -> dict[str, Any]:
+        del collector  # Authentication is intentionally separate from payload data.
+        received_at = utc_now()
+        self._iso_utc(heartbeat.get("observed_at"), fallback=received_at)
+        session_key = heartbeat["browser_session_id"]
+        state = heartbeat["state"]
+        with self.database.transaction() as connection:
+            self._require_observer_source(
+                connection, source_id, require_enabled=True
+            )
+            previous = connection.execute(
+                """
+                SELECT * FROM source_coverage_sessions
+                WHERE source_id = ? AND browser_session_id = ?
+                """,
+                (source_id, session_key),
+            ).fetchone()
+            session_id = previous["id"] if previous else new_id("cov")
+            if previous is not None:
+                previous_heartbeat = datetime.fromisoformat(
+                    previous["last_heartbeat_at"]
+                )
+                current_received = datetime.fromisoformat(received_at)
+                if (
+                    current_received - previous_heartbeat
+                    > timedelta(seconds=OBSERVER_HEARTBEAT_GAP_SECONDS)
+                ):
+                    self._insert_gap(
+                        connection,
+                        source_id=source_id,
+                        session_id=session_id,
+                        kind="heartbeat_missing",
+                        started_at=previous["last_heartbeat_at"],
+                        ended_at=received_at,
+                    )
+            connection.execute(
+                """
+                INSERT INTO source_coverage_sessions(
+                    id, source_id, browser_session_id, state, browser_version,
+                    extension_version, parser_version,
+                    current_conversation_id, current_conversation_name,
+                    unread_conversation_count, started_at, last_heartbeat_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(source_id, browser_session_id) DO UPDATE SET
+                    state = excluded.state,
+                    browser_version = excluded.browser_version,
+                    extension_version = excluded.extension_version,
+                    parser_version = excluded.parser_version,
+                    current_conversation_id = excluded.current_conversation_id,
+                    current_conversation_name = excluded.current_conversation_name,
+                    unread_conversation_count = excluded.unread_conversation_count,
+                    last_heartbeat_at = excluded.last_heartbeat_at,
+                    ended_at = NULL
+                """,
+                (
+                    session_id,
+                    source_id,
+                    session_key,
+                    state,
+                    heartbeat.get("browser_version"),
+                    heartbeat["extension_version"],
+                    heartbeat["parser_version"],
+                    heartbeat.get("current_conversation_id"),
+                    heartbeat.get("current_conversation_name"),
+                    heartbeat.get("unread_conversation_count", 0),
+                    received_at,
+                    received_at,
+                ),
+            )
+            self._update_state_gaps(
+                connection,
+                source_id=source_id,
+                session_id=session_id,
+                state=state,
+                unread_count=heartbeat.get("unread_conversation_count", 0),
+                now=received_at,
+            )
+            row = connection.execute(
+                "SELECT * FROM source_coverage_sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            return self._coverage_session_to_dict(row)
+
+    @staticmethod
+    def _insert_gap(
+        connection: sqlite3.Connection,
+        *,
+        source_id: str,
+        session_id: str | None,
+        kind: str,
+        started_at: str,
+        ended_at: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO source_gaps(
+                id, source_id, coverage_session_id, kind, started_at,
+                ended_at, details_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                new_id("gap"),
+                source_id,
+                session_id,
+                kind,
+                started_at,
+                ended_at,
+                json.dumps(details or {}, ensure_ascii=False),
+                utc_now(),
+            ),
+        )
+
+    def _update_state_gaps(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        source_id: str,
+        session_id: str,
+        state: str,
+        unread_count: int,
+        now: str,
+    ) -> None:
+        tracked_states = {
+            "login_required",
+            "awaiting_phone_confirm",
+            "capture_paused",
+            "browser_offline",
+            "parser_degraded",
+            "account_rejected",
+        }
+        open_rows = connection.execute(
+            """
+            SELECT id, kind FROM source_gaps
+            WHERE source_id = ? AND coverage_session_id = ? AND ended_at IS NULL
+            """,
+            (source_id, session_id),
+        ).fetchall()
+        desired = ({state} if state in tracked_states else set()) | (
+            {"unopened_conversations"} if unread_count else set()
+        )
+        open_kinds = {row["kind"] for row in open_rows}
+        for row in open_rows:
+            if row["kind"] not in desired:
+                connection.execute(
+                    "UPDATE source_gaps SET ended_at = ? WHERE id = ?",
+                    (now, row["id"]),
+                )
+        for kind in desired - open_kinds:
+            details = (
+                {"unread_conversation_count": unread_count}
+                if kind == "unopened_conversations"
+                else {}
+            )
+            self._insert_gap(
+                connection,
+                source_id=source_id,
+                session_id=session_id,
+                kind=kind,
+                started_at=now,
+                details=details,
+            )
+        if "unopened_conversations" in desired & open_kinds:
+            connection.execute(
+                """
+                UPDATE source_gaps SET details_json = ?
+                WHERE source_id = ? AND coverage_session_id = ?
+                  AND kind = 'unopened_conversations' AND ended_at IS NULL
+                """,
+                (
+                    json.dumps(
+                        {"unread_conversation_count": unread_count},
+                        ensure_ascii=False,
+                    ),
+                    source_id,
+                    session_id,
+                ),
+            )
+
+    def ingest_observer_events(
+        self,
+        source_id: str,
+        collector: dict[str, str],
+        batch: dict[str, Any],
+    ) -> dict[str, Any]:
+        canonical_payload = json.dumps(
+            batch, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        payload_hash = hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()
+        received_at = utc_now()
+        with self.database.transaction() as connection:
+            self._require_observer_source(
+                connection, source_id, require_enabled=True
+            )
+            cached = connection.execute(
+                """
+                SELECT payload_hash, response_json FROM collector_batches
+                WHERE source_id = ? AND batch_id = ?
+                """,
+                (source_id, batch["batch_id"]),
+            ).fetchone()
+            if cached is not None:
+                if not secrets.compare_digest(cached["payload_hash"], payload_hash):
+                    raise PocketError(409, "同一 batch_id 不能提交不同内容")
+                return json_loads(cached["response_json"], {})
+
+            session = connection.execute(
+                """
+                SELECT id FROM source_coverage_sessions
+                WHERE source_id = ? AND browser_session_id = ?
+                """,
+                (source_id, batch["browser_session_id"]),
+            ).fetchone()
+            if session is None:
+                raise PocketError(409, "发送消息前必须先提交该浏览器会话的 heartbeat")
+
+            accepted = 0
+            duplicates = 0
+            for event in batch["events"]:
+                observed_at = self._iso_utc(event["observed_at"])
+                sent_at = (
+                    self._iso_utc(event["sent_at"])
+                    if event.get("sent_at") is not None
+                    else None
+                )
+                event_id = new_id("ing")
+                inserted = connection.execute(
+                    """
+                    INSERT OR IGNORE INTO ingest_events(
+                        id, source_id, collector_token_id, provider_event_key,
+                        event_type, payload_json, observed_at, received_at
+                    ) VALUES (?, ?, ?, ?, 'message', ?, ?, ?)
+                    """,
+                    (
+                        event_id,
+                        source_id,
+                        collector["token_id"],
+                        f"message:{event['provider_msgid']}",
+                        json.dumps(event, ensure_ascii=False, sort_keys=True),
+                        observed_at,
+                        received_at,
+                    ),
+                )
+                if inserted.rowcount == 0:
+                    duplicates += 1
+                    continue
+
+                conversation = connection.execute(
+                    """
+                    SELECT id FROM im_conversations
+                    WHERE source_id = ? AND provider_conversation_id = ?
+                    """,
+                    (source_id, event["provider_conversation_id"]),
+                ).fetchone()
+                if conversation is None:
+                    conversation_id = new_id("conv")
+                    connection.execute(
+                        """
+                        INSERT INTO im_conversations(
+                            id, source_id, provider_conversation_id, display_name,
+                            conversation_type, first_observed_at, last_observed_at,
+                            created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            conversation_id,
+                            source_id,
+                            event["provider_conversation_id"],
+                            event.get("conversation_name"),
+                            event["conversation_type"],
+                            observed_at,
+                            observed_at,
+                            received_at,
+                            received_at,
+                        ),
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO conversation_policies(
+                            conversation_id, created_at, updated_at
+                        ) VALUES (?, ?, ?)
+                        """,
+                        (conversation_id, received_at, received_at),
+                    )
+                else:
+                    conversation_id = conversation["id"]
+                    connection.execute(
+                        """
+                        UPDATE im_conversations
+                        SET display_name = COALESCE(?, display_name),
+                            conversation_type = CASE
+                                WHEN ? = 'unknown' THEN conversation_type
+                                ELSE ?
+                            END,
+                            last_observed_at = CASE
+                                WHEN last_observed_at < ? THEN ?
+                                ELSE last_observed_at
+                            END,
+                            updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            event.get("conversation_name"),
+                            event["conversation_type"],
+                            event["conversation_type"],
+                            observed_at,
+                            observed_at,
+                            received_at,
+                            conversation_id,
+                        ),
+                    )
+
+                text_content = event.get("text")
+                content_hash = (
+                    hashlib.sha256(text_content.encode("utf-8")).hexdigest()
+                    if text_content is not None
+                    else None
+                )
+                message_id = new_id("msg")
+                connection.execute(
+                    """
+                    INSERT INTO im_messages(
+                        id, source_id, conversation_id, ingest_event_id,
+                        provider_msgid, sender_provider_id, sender_display_name,
+                        direction, message_type, text_content, content_hash,
+                        displayed_time_text, sent_at, observed_at, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        message_id,
+                        source_id,
+                        conversation_id,
+                        event_id,
+                        event["provider_msgid"],
+                        event.get("sender_provider_id"),
+                        event.get("sender_display_name"),
+                        event["direction"],
+                        event["message_type"],
+                        text_content,
+                        content_hash,
+                        event.get("displayed_time_text"),
+                        sent_at,
+                        observed_at,
+                        received_at,
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO im_message_versions(
+                        id, message_id, event_type, text_content,
+                        payload_json, observed_at, created_at
+                    ) VALUES (?, ?, 'created', ?, ?, ?, ?)
+                    """,
+                    (
+                        new_id("mver"),
+                        message_id,
+                        text_content,
+                        json.dumps(event, ensure_ascii=False, sort_keys=True),
+                        observed_at,
+                        received_at,
+                    ),
+                )
+                sender_provider_id = event.get("sender_provider_id")
+                if sender_provider_id:
+                    identity = connection.execute(
+                        """
+                        SELECT id FROM im_identities
+                        WHERE source_id = ? AND provider_identity_id = ?
+                        """,
+                        (source_id, sender_provider_id),
+                    ).fetchone()
+                    identity_id = identity["id"] if identity else new_id("ident")
+                    connection.execute(
+                        """
+                        INSERT INTO im_identities(
+                            id, source_id, provider_identity_id, display_name,
+                            first_observed_at, last_observed_at, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(source_id, provider_identity_id) DO UPDATE SET
+                            display_name = COALESCE(excluded.display_name, display_name),
+                            last_observed_at = excluded.last_observed_at,
+                            updated_at = excluded.updated_at
+                        """,
+                        (
+                            identity_id,
+                            source_id,
+                            sender_provider_id,
+                            event.get("sender_display_name"),
+                            observed_at,
+                            observed_at,
+                            received_at,
+                            received_at,
+                        ),
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO im_conversation_members(
+                            conversation_id, identity_id, display_name,
+                            first_observed_at, last_observed_at
+                        ) VALUES (?, ?, ?, ?, ?)
+                        ON CONFLICT(conversation_id, identity_id) DO UPDATE SET
+                            display_name = COALESCE(excluded.display_name, display_name),
+                            last_observed_at = excluded.last_observed_at
+                        """,
+                        (
+                            conversation_id,
+                            identity_id,
+                            event.get("sender_display_name"),
+                            observed_at,
+                            observed_at,
+                        ),
+                    )
+
+                knowledge_messages = [
+                    {
+                        "id": message_id,
+                        "conversation_id": conversation_id,
+                        "sender_display_name": event.get("sender_display_name"),
+                        "text_content": text_content,
+                    }
+                ]
+                for candidate in extract_knowledge_candidates(knowledge_messages):
+                    candidate_id = new_id("claim")
+                    inserted_candidate = connection.execute(
+                        """
+                        INSERT OR IGNORE INTO knowledge_candidates(
+                            id, idempotency_key, conversation_id, claim_type,
+                            text_content, speaker, explicitness, authority,
+                            confidence, status, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'observed', ?,
+                                  'provisional', ?, ?)
+                        """,
+                        (
+                            candidate_id,
+                            candidate.idempotency_key,
+                            candidate.conversation_id,
+                            candidate.claim_type,
+                            candidate.text,
+                            candidate.speaker,
+                            candidate.explicitness,
+                            candidate.confidence,
+                            received_at,
+                            received_at,
+                        ),
+                    )
+                    if inserted_candidate.rowcount:
+                        connection.execute(
+                            """
+                            INSERT INTO knowledge_evidence(
+                                candidate_id, message_id, evidence_role, excerpt
+                            ) VALUES (?, ?, 'primary', ?)
+                            """,
+                            (candidate_id, message_id, candidate.text[:500]),
+                        )
+                accepted += 1
+
+            response = {
+                "batch_id": batch["batch_id"],
+                "accepted_count": accepted,
+                "duplicate_count": duplicates,
+                "total_count": len(batch["events"]),
+                "received_at": received_at,
+            }
+            connection.execute(
+                """
+                INSERT INTO collector_batches(
+                    source_id, batch_id, payload_hash, response_json, created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    source_id,
+                    batch["batch_id"],
+                    payload_hash,
+                    json.dumps(response, ensure_ascii=False),
+                    received_at,
+                ),
+            )
+            connection.execute(
+                "UPDATE sources SET last_sync_at = ?, updated_at = ? WHERE id = ?",
+                (received_at, received_at, source_id),
+            )
+            return response
+
+    def set_observer_enabled(self, source_id: str, *, enabled: bool) -> dict[str, Any]:
+        now = utc_now()
+        with self.database.transaction() as connection:
+            self._require_observer_source(connection, source_id)
+            connection.execute(
+                "UPDATE sources SET enabled = ?, updated_at = ? WHERE id = ?",
+                (int(enabled), now, source_id),
+            )
+            latest = connection.execute(
+                """
+                SELECT id FROM source_coverage_sessions
+                WHERE source_id = ? ORDER BY last_heartbeat_at DESC LIMIT 1
+                """,
+                (source_id,),
+            ).fetchone()
+            if latest is not None:
+                if enabled:
+                    connection.execute(
+                        """
+                        UPDATE source_gaps SET ended_at = ?
+                        WHERE source_id = ? AND kind = 'capture_paused'
+                          AND ended_at IS NULL
+                        """,
+                        (now, source_id),
+                    )
+                else:
+                    existing = connection.execute(
+                        """
+                        SELECT 1 FROM source_gaps
+                        WHERE source_id = ? AND kind = 'capture_paused'
+                          AND ended_at IS NULL
+                        """,
+                        (source_id,),
+                    ).fetchone()
+                    if existing is None:
+                        self._insert_gap(
+                            connection,
+                            source_id=source_id,
+                            session_id=latest["id"],
+                            kind="capture_paused",
+                            started_at=now,
+                        )
+            self._record_activity(
+                connection,
+                kind="observer.resumed" if enabled else "observer.paused",
+                message="已恢复微信网页观察器" if enabled else "已暂停微信网页观察器",
+                resource_type="source",
+                resource_id=source_id,
+            )
+            return self._get_source(connection, source_id)
+
+    def observer_status(self, source_id: str) -> dict[str, Any]:
+        with self.database.connect() as connection:
+            source = self._require_observer_source(connection, source_id)
+            latest = connection.execute(
+                """
+                SELECT * FROM source_coverage_sessions
+                WHERE source_id = ? ORDER BY last_heartbeat_at DESC LIMIT 1
+                """,
+                (source_id,),
+            ).fetchone()
+            active_pairing = connection.execute(
+                """
+                SELECT 1 FROM collector_pairings
+                WHERE source_id = ? AND used_at IS NULL AND revoked_at IS NULL
+                  AND expires_at > ? LIMIT 1
+                """,
+                (source_id, utc_now()),
+            ).fetchone()
+            active_token = connection.execute(
+                """
+                SELECT 1 FROM collector_tokens
+                WHERE source_id = ? AND revoked_at IS NULL LIMIT 1
+                """,
+                (source_id,),
+            ).fetchone()
+            counts = connection.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM im_conversations WHERE source_id = ?) AS conversations,
+                    (SELECT COUNT(*) FROM im_messages WHERE source_id = ?) AS messages,
+                    (SELECT COUNT(*) FROM source_gaps
+                        WHERE source_id = ? AND ended_at IS NULL) AS open_gaps
+                """,
+                (source_id, source_id, source_id),
+            ).fetchone()
+
+        stale = False
+        session = self._coverage_session_to_dict(latest) if latest else None
+        if latest is not None:
+            stale = datetime.now(UTC) - datetime.fromisoformat(
+                latest["last_heartbeat_at"]
+            ) > timedelta(seconds=OBSERVER_HEARTBEAT_GAP_SECONDS)
+        if not source["enabled"]:
+            state = "capture_paused"
+        elif latest is not None and not stale:
+            state = latest["state"]
+        elif latest is not None:
+            state = "browser_offline"
+        elif active_token is not None:
+            state = "login_required"
+        elif active_pairing is not None:
+            state = "awaiting_pairing"
+        else:
+            state = "extension_missing"
+        return {
+            "source_id": source_id,
+            "state": state,
+            "enabled": bool(source["enabled"]),
+            "paired": active_token is not None,
+            "heartbeat_stale": stale,
+            "last_event_at": source["last_sync_at"],
+            "last_session": session,
+            "conversation_count": counts["conversations"],
+            "message_count": counts["messages"],
+            "open_gap_count": counts["open_gaps"],
+            "coverage_notice": "仅覆盖微信网页已经实际渲染的内容",
+        }
+
+    def list_observer_gaps(
+        self, source_id: str, *, limit: int, offset: int
+    ) -> dict[str, Any]:
+        with self.database.connect() as connection:
+            self._require_observer_source(connection, source_id)
+            total = connection.execute(
+                "SELECT COUNT(*) FROM source_gaps WHERE source_id = ?",
+                (source_id,),
+            ).fetchone()[0]
+            rows = connection.execute(
+                """
+                SELECT * FROM source_gaps WHERE source_id = ?
+                ORDER BY started_at DESC, id DESC LIMIT ? OFFSET ?
+                """,
+                (source_id, limit, offset),
+            ).fetchall()
+            items = [
+                {
+                    "id": row["id"],
+                    "source_id": row["source_id"],
+                    "kind": row["kind"],
+                    "started_at": row["started_at"],
+                    "ended_at": row["ended_at"],
+                    "details": json_loads(row["details_json"], {}),
+                    "created_at": row["created_at"],
+                }
+                for row in rows
+            ]
+            return {"items": items, "total": total, "limit": limit, "offset": offset}
+
+    @staticmethod
+    def _coverage_session_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "browser_session_id": row["browser_session_id"],
+            "state": row["state"],
+            "browser_version": row["browser_version"],
+            "extension_version": row["extension_version"],
+            "parser_version": row["parser_version"],
+            "current_conversation_id": row["current_conversation_id"],
+            "current_conversation_name": row["current_conversation_name"],
+            "unread_conversation_count": row["unread_conversation_count"],
+            "started_at": row["started_at"],
+            "last_heartbeat_at": row["last_heartbeat_at"],
+            "ended_at": row["ended_at"],
+        }
+
+    def list_im_conversations(
+        self, *, source_id: str | None, limit: int, offset: int
+    ) -> dict[str, Any]:
+        where = "WHERE conversation.source_id = ?" if source_id else ""
+        params: list[Any] = [source_id] if source_id else []
+        with self.database.connect() as connection:
+            if source_id:
+                self._require_observer_source(connection, source_id)
+            total = connection.execute(
+                f"SELECT COUNT(*) FROM im_conversations conversation {where}",
+                params,
+            ).fetchone()[0]
+            rows = connection.execute(
+                f"""
+                SELECT conversation.*, policy.agent_enabled, policy.retention_days,
+                       (SELECT COUNT(*) FROM im_messages message
+                        WHERE message.conversation_id = conversation.id) AS message_count
+                FROM im_conversations conversation
+                JOIN conversation_policies policy
+                  ON policy.conversation_id = conversation.id
+                {where}
+                ORDER BY conversation.last_observed_at DESC, conversation.id DESC
+                LIMIT ? OFFSET ?
+                """,
+                (*params, limit, offset),
+            ).fetchall()
+            return {
+                "items": [self._conversation_to_dict(row) for row in rows],
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+            }
+
+    def get_im_messages(
+        self, conversation_id: str, *, limit: int, offset: int
+    ) -> dict[str, Any]:
+        with self.database.connect() as connection:
+            conversation = connection.execute(
+                "SELECT id FROM im_conversations WHERE id = ?",
+                (conversation_id,),
+            ).fetchone()
+            if conversation is None:
+                raise PocketError(404, "会话不存在")
+            total = connection.execute(
+                "SELECT COUNT(*) FROM im_messages WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()[0]
+            rows = connection.execute(
+                """
+                SELECT * FROM im_messages WHERE conversation_id = ?
+                ORDER BY observed_at DESC, id DESC LIMIT ? OFFSET ?
+                """,
+                (conversation_id, limit, offset),
+            ).fetchall()
+            items = [
+                {
+                    "id": row["id"],
+                    "conversation_id": row["conversation_id"],
+                    "provider_msgid": row["provider_msgid"],
+                    "sender_provider_id": row["sender_provider_id"],
+                    "sender_display_name": row["sender_display_name"],
+                    "direction": row["direction"],
+                    "message_type": row["message_type"],
+                    "text": row["text_content"],
+                    "displayed_time_text": row["displayed_time_text"],
+                    "sent_at": row["sent_at"],
+                    "observed_at": row["observed_at"],
+                    "created_at": row["created_at"],
+                }
+                for row in rows
+            ]
+            return {"items": items, "total": total, "limit": limit, "offset": offset}
+
+    def update_conversation_policy(
+        self, conversation_id: str, updates: dict[str, Any]
+    ) -> dict[str, Any]:
+        with self.database.transaction() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM im_conversations WHERE id = ?",
+                (conversation_id,),
+            ).fetchone()
+            if exists is None:
+                raise PocketError(404, "会话不存在")
+            values: dict[str, Any] = {}
+            if "agent_enabled" in updates:
+                values["agent_enabled"] = int(updates["agent_enabled"])
+            if "retention_days" in updates:
+                values["retention_days"] = updates["retention_days"]
+            values["updated_at"] = utc_now()
+            assignments = ", ".join(f"{key} = ?" for key in values)
+            connection.execute(
+                f"UPDATE conversation_policies SET {assignments} WHERE conversation_id = ?",
+                (*values.values(), conversation_id),
+            )
+            row = connection.execute(
+                """
+                SELECT conversation.*, policy.agent_enabled, policy.retention_days,
+                       (SELECT COUNT(*) FROM im_messages message
+                        WHERE message.conversation_id = conversation.id) AS message_count
+                FROM im_conversations conversation
+                JOIN conversation_policies policy
+                  ON policy.conversation_id = conversation.id
+                WHERE conversation.id = ?
+                """,
+                (conversation_id,),
+            ).fetchone()
+            return self._conversation_to_dict(row)
+
+    def list_knowledge_candidates(
+        self,
+        *,
+        status: str | None,
+        conversation_id: str | None,
+        limit: int,
+        offset: int,
+    ) -> dict[str, Any]:
+        clauses: list[str] = []
+        parameters: list[Any] = []
+        if status:
+            clauses.append("candidate.status = ?")
+            parameters.append(status)
+        if conversation_id:
+            clauses.append("candidate.conversation_id = ?")
+            parameters.append(conversation_id)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self.database.connect() as connection:
+            total = connection.execute(
+                f"SELECT COUNT(*) FROM knowledge_candidates candidate {where}",
+                parameters,
+            ).fetchone()[0]
+            rows = connection.execute(
+                f"""
+                SELECT candidate.*, conversation.display_name AS conversation_name,
+                       conversation.source_id, source.name AS source_name,
+                       policy.agent_enabled
+                FROM knowledge_candidates candidate
+                JOIN im_conversations conversation
+                  ON conversation.id = candidate.conversation_id
+                JOIN sources source ON source.id = conversation.source_id
+                JOIN conversation_policies policy
+                  ON policy.conversation_id = conversation.id
+                {where}
+                ORDER BY candidate.updated_at DESC, candidate.id DESC
+                LIMIT ? OFFSET ?
+                """,
+                (*parameters, limit, offset),
+            ).fetchall()
+            items = [
+                self._knowledge_candidate_to_dict(connection, row) for row in rows
+            ]
+            return {"items": items, "total": total, "limit": limit, "offset": offset}
+
+    def resolve_knowledge_candidate(
+        self, candidate_id: str, *, action: str
+    ) -> dict[str, Any]:
+        if action not in {"confirm", "dismiss"}:
+            raise PocketError(422, "不支持的知识确认动作")
+        target_status = "confirmed" if action == "confirm" else "dismissed"
+        now = utc_now()
+        with self.database.transaction() as connection:
+            row = connection.execute(
+                "SELECT * FROM knowledge_candidates WHERE id = ?",
+                (candidate_id,),
+            ).fetchone()
+            if row is None:
+                raise PocketError(404, "知识候选不存在")
+            if row["status"] != "provisional":
+                if row["status"] == target_status:
+                    return self._get_knowledge_candidate(connection, candidate_id)
+                raise PocketError(409, "该知识候选已经处理")
+            connection.execute(
+                """
+                UPDATE knowledge_candidates
+                SET status = ?, resolved_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (target_status, now, now, candidate_id),
+            )
+            self._record_activity(
+                connection,
+                kind=f"knowledge.{target_status}",
+                message=(
+                    "已确认一条聊天知识结论"
+                    if target_status == "confirmed"
+                    else "已忽略一条聊天知识候选"
+                ),
+                resource_type="knowledge_candidate",
+                resource_id=candidate_id,
+            )
+            return self._get_knowledge_candidate(connection, candidate_id)
+
+    def retention_preview(self) -> dict[str, Any]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT conversation.id AS conversation_id,
+                       conversation.display_name AS conversation_name,
+                       conversation.source_id, source.name AS source_name,
+                       policy.retention_days, COUNT(*) AS eligible_count
+                {self._retention_candidate_sql()}
+                GROUP BY conversation.id
+                ORDER BY eligible_count DESC, conversation.id
+                """
+            ).fetchall()
+            protected_count = connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM im_messages message
+                JOIN im_conversations conversation
+                  ON conversation.id = message.conversation_id
+                JOIN conversation_policies policy
+                  ON policy.conversation_id = conversation.id
+                WHERE julianday(COALESCE(message.sent_at, message.observed_at))
+                      < julianday('now', '-' || policy.retention_days || ' days')
+                  AND EXISTS (
+                      SELECT 1
+                      FROM knowledge_evidence evidence
+                      JOIN knowledge_candidates candidate
+                        ON candidate.id = evidence.candidate_id
+                      WHERE evidence.message_id = message.id
+                        AND candidate.status = 'confirmed'
+                  )
+                """
+            ).fetchone()[0]
+        conversations = [
+            {
+                "conversation_id": row["conversation_id"],
+                "conversation_name": row["conversation_name"],
+                "source_id": row["source_id"],
+                "source_name": row["source_name"],
+                "retention_days": row["retention_days"],
+                "eligible_count": row["eligible_count"],
+            }
+            for row in rows
+        ]
+        return {
+            "eligible_message_count": sum(
+                item["eligible_count"] for item in conversations
+            ),
+            "protected_evidence_count": protected_count,
+            "conversations": conversations,
+            "mode": "preview",
+        }
+
+    def apply_retention(self) -> dict[str, Any]:
+        preview = self.retention_preview()
+        now = utc_now()
+        with self.database.transaction() as connection:
+            deleted_messages = connection.execute(
+                f"""
+                DELETE FROM im_messages
+                WHERE id IN (
+                    SELECT message.id {self._retention_candidate_sql()}
+                )
+                """
+            ).rowcount
+            deleted_candidates = connection.execute(
+                """
+                DELETE FROM knowledge_candidates
+                WHERE status != 'confirmed'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM knowledge_evidence evidence
+                      WHERE evidence.candidate_id = knowledge_candidates.id
+                  )
+                """
+            ).rowcount
+            deleted_events = connection.execute(
+                """
+                DELETE FROM ingest_events
+                WHERE event_type = 'message'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM im_messages message
+                      WHERE message.ingest_event_id = ingest_events.id
+                  )
+                """
+            ).rowcount
+            deleted_memberships = connection.execute(
+                """
+                DELETE FROM im_conversation_members
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM im_identities identity
+                    JOIN im_messages message
+                      ON message.source_id = identity.source_id
+                     AND message.sender_provider_id = identity.provider_identity_id
+                    WHERE identity.id = im_conversation_members.identity_id
+                      AND message.conversation_id =
+                          im_conversation_members.conversation_id
+                )
+                """
+            ).rowcount
+            deleted_identities = connection.execute(
+                """
+                DELETE FROM im_identities
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM im_conversation_members member
+                    WHERE member.identity_id = im_identities.id
+                )
+                """
+            ).rowcount
+            self._record_activity(
+                connection,
+                kind="im.retention_applied",
+                message=f"已按会话保留策略清理 {deleted_messages} 条过期消息",
+                resource_type="im_retention",
+                details={
+                    "deleted_messages": deleted_messages,
+                    "deleted_candidates": deleted_candidates,
+                    "deleted_ingest_events": deleted_events,
+                    "deleted_memberships": deleted_memberships,
+                    "deleted_identities": deleted_identities,
+                    "protected_evidence_count": preview["protected_evidence_count"],
+                },
+            )
+        return {
+            **preview,
+            "mode": "applied",
+            "deleted_message_count": deleted_messages,
+            "deleted_candidate_count": deleted_candidates,
+            "deleted_ingest_event_count": deleted_events,
+            "deleted_membership_count": deleted_memberships,
+            "deleted_identity_count": deleted_identities,
+            "applied_at": now,
+        }
+
+    @staticmethod
+    def _retention_candidate_sql() -> str:
+        return """
+            FROM im_messages message
+            JOIN im_conversations conversation
+              ON conversation.id = message.conversation_id
+            JOIN conversation_policies policy
+              ON policy.conversation_id = conversation.id
+            JOIN sources source ON source.id = conversation.source_id
+            WHERE julianday(COALESCE(message.sent_at, message.observed_at))
+                  < julianday('now', '-' || policy.retention_days || ' days')
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM knowledge_evidence evidence
+                  JOIN knowledge_candidates candidate
+                    ON candidate.id = evidence.candidate_id
+                  WHERE evidence.message_id = message.id
+                    AND candidate.status = 'confirmed'
+              )
+        """
+
+    def _get_knowledge_candidate(
+        self, connection: sqlite3.Connection, candidate_id: str
+    ) -> dict[str, Any]:
+        row = connection.execute(
+            """
+            SELECT candidate.*, conversation.display_name AS conversation_name,
+                   conversation.source_id, source.name AS source_name,
+                   policy.agent_enabled
+            FROM knowledge_candidates candidate
+            JOIN im_conversations conversation
+              ON conversation.id = candidate.conversation_id
+            JOIN sources source ON source.id = conversation.source_id
+            JOIN conversation_policies policy
+              ON policy.conversation_id = conversation.id
+            WHERE candidate.id = ?
+            """,
+            (candidate_id,),
+        ).fetchone()
+        if row is None:
+            raise PocketError(404, "知识候选不存在")
+        return self._knowledge_candidate_to_dict(connection, row)
+
+    @staticmethod
+    def _knowledge_candidate_to_dict(
+        connection: sqlite3.Connection, row: sqlite3.Row
+    ) -> dict[str, Any]:
+        evidence_rows = connection.execute(
+            """
+            SELECT evidence.message_id, evidence.evidence_role, evidence.excerpt,
+                   message.provider_msgid, message.sender_display_name,
+                   message.sent_at, message.observed_at, message.authority
+            FROM knowledge_evidence evidence
+            JOIN im_messages message ON message.id = evidence.message_id
+            WHERE evidence.candidate_id = ?
+            ORDER BY message.observed_at, message.id
+            """,
+            (row["id"],),
+        ).fetchall()
+        return {
+            "id": row["id"],
+            "conversation_id": row["conversation_id"],
+            "conversation_name": row["conversation_name"],
+            "source_id": row["source_id"],
+            "source_name": row["source_name"],
+            "claim_type": row["claim_type"],
+            "text": row["text_content"],
+            "speaker": row["speaker"],
+            "explicitness": row["explicitness"],
+            "authority": row["authority"],
+            "confidence": row["confidence"],
+            "status": row["status"],
+            "agent_enabled": bool(row["agent_enabled"]),
+            "valid_from": row["valid_from"],
+            "valid_to": row["valid_to"],
+            "evidence": [
+                {
+                    "message_id": evidence["message_id"],
+                    "provider_msgid": evidence["provider_msgid"],
+                    "role": evidence["evidence_role"],
+                    "excerpt": evidence["excerpt"],
+                    "speaker": evidence["sender_display_name"],
+                    "sent_at": evidence["sent_at"],
+                    "observed_at": evidence["observed_at"],
+                    "authority": evidence["authority"],
+                }
+                for evidence in evidence_rows
+            ],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "resolved_at": row["resolved_at"],
+        }
+
+    @staticmethod
+    def _conversation_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "source_id": row["source_id"],
+            "provider_conversation_id": row["provider_conversation_id"],
+            "display_name": row["display_name"],
+            "conversation_type": row["conversation_type"],
+            "message_count": row["message_count"],
+            "first_observed_at": row["first_observed_at"],
+            "last_observed_at": row["last_observed_at"],
+            "policy": {
+                "agent_enabled": bool(row["agent_enabled"]),
+                "retention_days": row["retention_days"],
+            },
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
@@ -455,6 +2290,8 @@ class PocketService:
                     return cached
 
         source = self.get_source(source_id)
+        if source["kind"] != "folder":
+            raise PocketError(409, "网页观察器通过 Collector 持续接收事件，不能目录同步")
         if not source["enabled"]:
             raise PocketError(409, "数据源已暂停，启用后才能同步")
 
@@ -821,7 +2658,9 @@ class PocketService:
                         LIMIT 1
                     ) AS latest_started_at
                 FROM sources source
-                WHERE source.enabled = 1 AND source.schedule != 'manual'
+                WHERE source.enabled = 1
+                  AND source.kind = 'folder'
+                  AND source.schedule != 'manual'
                 """
             ).fetchall()
         for row in rows:
@@ -2327,14 +4166,29 @@ class PocketService:
         limit: int,
         tags: list[str],
         category: str | None,
+        source_ids: list[str] | None = None,
+        conversation_ids: list[str] | None = None,
+        participant_ids: list[str] | None = None,
+        sent_from: datetime | None = None,
+        sent_to: datetime | None = None,
+        item_kinds: list[str] | None = None,
     ) -> dict[str, Any]:
         query = query.strip()
         if not query:
             raise PocketError(422, "query 不能为空")
+        source_ids = source_ids or []
+        conversation_ids = conversation_ids or []
+        participant_ids = participant_ids or []
+        requested_kinds = set(item_kinds or ["document", "im_message", "knowledge"])
+        im_specific_filters = bool(
+            conversation_ids or participant_ids or sent_from is not None or sent_to is not None
+        )
+        include_documents = "document" in requested_kinds and not im_specific_filters
+        include_im = not tags and category is None
         tokens = re.findall(r"\w+", query, flags=re.UNICODE)
         candidates: list[dict[str, Any]] = []
         with self.database.connect() as connection:
-            if tokens:
+            if include_documents and tokens:
                 match_query = " OR ".join(
                     f'"{token.replace(chr(34), chr(34) * 2)}"' for token in tokens
                 )
@@ -2350,6 +4204,7 @@ class PocketService:
                         bm25(item_fts) AS fts_rank,
                         snippet(item_fts, 2, '', '', ' … ', 28) AS search_snippet,
                         active_link.origin_uri AS active_origin_uri,
+                        active_link.source_id AS active_source_id,
                         source.name AS active_source_name,
                         source.config_json AS active_source_config
                     FROM item_fts
@@ -2375,7 +4230,7 @@ class PocketService:
                     self._agent_result(row, fallback_score=False) for row in rows
                 ]
 
-            if not candidates:
+            if include_documents and not candidates:
                 category_clause = "AND item.category = ?" if category else ""
                 like = f"%{query}%"
                 parameters = [like, like, like]
@@ -2389,6 +4244,7 @@ class PocketService:
                         NULL AS fts_rank,
                         substr(item.text_content, 1, 320) AS search_snippet,
                         active_link.origin_uri AS active_origin_uri,
+                        active_link.source_id AS active_source_id,
                         source.name AS active_source_name,
                         source.config_json AS active_source_config
                     FROM items item
@@ -2417,6 +4273,43 @@ class PocketService:
                     self._agent_result(row, fallback_score=True) for row in rows
                 ]
 
+            if source_ids:
+                allowed_source_ids = set(source_ids)
+                candidates = [
+                    candidate
+                    for candidate in candidates
+                    if candidate.get("source_id") in allowed_source_ids
+                ]
+
+            if include_im and "im_message" in requested_kinds:
+                candidates.extend(
+                    self._search_im_messages(
+                        connection,
+                        query=query,
+                        tokens=tokens,
+                        limit=min(limit * 8, 200),
+                        source_ids=source_ids,
+                        conversation_ids=conversation_ids,
+                        participant_ids=participant_ids,
+                        sent_from=sent_from,
+                        sent_to=sent_to,
+                    )
+                )
+            if include_im and "knowledge" in requested_kinds:
+                candidates.extend(
+                    self._search_confirmed_knowledge(
+                        connection,
+                        query=query,
+                        tokens=tokens,
+                        limit=min(limit * 8, 200),
+                        source_ids=source_ids,
+                        conversation_ids=conversation_ids,
+                        participant_ids=participant_ids,
+                        sent_from=sent_from,
+                        sent_to=sent_to,
+                    )
+                )
+
         required_tags = {tag.casefold() for tag in tags if tag.strip()}
         if required_tags:
             candidates = [
@@ -2424,28 +4317,419 @@ class PocketService:
                 for candidate in candidates
                 if required_tags.issubset({tag.casefold() for tag in candidate["tags"]})
             ]
+        candidates.sort(
+            key=lambda candidate: (
+                candidate["score"],
+                candidate.get("updated_at")
+                or candidate.get("sent_at")
+                or candidate.get("observed_at")
+                or "",
+            ),
+            reverse=True,
+        )
         results = candidates[:limit]
+        includes_opted_in_im = any(
+            result.get("kind") in {"im_message", "knowledge"} for result in results
+        )
         return {
             "query": query,
             "results": results,
             "count": len(results),
-            "visibility": "ready_only",
+            "visibility": (
+                "ready_and_opted_in_im" if includes_opted_in_im else "ready_only"
+            ),
         }
+
+    def _search_im_messages(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        query: str,
+        tokens: list[str],
+        limit: int,
+        source_ids: list[str],
+        conversation_ids: list[str],
+        participant_ids: list[str],
+        sent_from: datetime | None,
+        sent_to: datetime | None,
+    ) -> list[dict[str, Any]]:
+        clauses, filter_parameters = self._im_filter_clauses(
+            source_ids=source_ids,
+            conversation_ids=conversation_ids,
+            participant_ids=participant_ids,
+            sent_from=sent_from,
+            sent_to=sent_to,
+            message_alias="message",
+            conversation_alias="conversation",
+        )
+        where_filters = " ".join(f"AND {clause}" for clause in clauses)
+        rows: list[sqlite3.Row] = []
+        if tokens:
+            match_query = " OR ".join(
+                f'"{token.replace(chr(34), chr(34) * 2)}"' for token in tokens
+            )
+            rows = connection.execute(
+                f"""
+                SELECT message.*, conversation.display_name AS conversation_name,
+                       source.name AS source_name,
+                       bm25(im_message_fts) AS fts_rank,
+                       snippet(im_message_fts, 1, '', '', ' … ', 28)
+                           AS search_snippet
+                FROM im_message_fts
+                JOIN im_messages message ON message.id = im_message_fts.message_id
+                JOIN im_conversations conversation
+                  ON conversation.id = message.conversation_id
+                JOIN conversation_policies policy
+                  ON policy.conversation_id = conversation.id
+                JOIN sources source ON source.id = conversation.source_id
+                WHERE im_message_fts MATCH ?
+                  AND policy.agent_enabled = 1
+                  {where_filters}
+                ORDER BY bm25(im_message_fts), message.observed_at DESC
+                LIMIT ?
+                """,
+                (match_query, *filter_parameters, limit),
+            ).fetchall()
+        if not rows:
+            like = f"%{query}%"
+            rows = connection.execute(
+                f"""
+                SELECT message.*, conversation.display_name AS conversation_name,
+                       source.name AS source_name, NULL AS fts_rank,
+                       substr(message.text_content, 1, 320) AS search_snippet
+                FROM im_messages message
+                JOIN im_conversations conversation
+                  ON conversation.id = message.conversation_id
+                JOIN conversation_policies policy
+                  ON policy.conversation_id = conversation.id
+                JOIN sources source ON source.id = conversation.source_id
+                WHERE policy.agent_enabled = 1
+                  AND message.text_content LIKE ?
+                  {where_filters}
+                ORDER BY message.observed_at DESC
+                LIMIT ?
+                """,
+                (like, *filter_parameters, limit),
+            ).fetchall()
+        return [self._agent_im_message_result(row) for row in rows]
+
+    def _search_confirmed_knowledge(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        query: str,
+        tokens: list[str],
+        limit: int,
+        source_ids: list[str],
+        conversation_ids: list[str],
+        participant_ids: list[str],
+        sent_from: datetime | None,
+        sent_to: datetime | None,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        parameters: list[Any] = []
+        if source_ids:
+            placeholders = ",".join("?" for _ in source_ids)
+            clauses.append(f"conversation.source_id IN ({placeholders})")
+            parameters.extend(source_ids)
+        if conversation_ids:
+            placeholders = ",".join("?" for _ in conversation_ids)
+            clauses.append(f"candidate.conversation_id IN ({placeholders})")
+            parameters.extend(conversation_ids)
+
+        evidence_clauses: list[str] = []
+        evidence_parameters: list[Any] = []
+        if participant_ids:
+            placeholders = ",".join("?" for _ in participant_ids)
+            evidence_clauses.append(f"evidence_message.sender_provider_id IN ({placeholders})")
+            evidence_parameters.extend(participant_ids)
+        if sent_from is not None:
+            evidence_clauses.append(
+                "COALESCE(evidence_message.sent_at, evidence_message.observed_at) >= ?"
+            )
+            evidence_parameters.append(self._search_time(sent_from))
+        if sent_to is not None:
+            evidence_clauses.append(
+                "COALESCE(evidence_message.sent_at, evidence_message.observed_at) <= ?"
+            )
+            evidence_parameters.append(self._search_time(sent_to))
+        if evidence_clauses:
+            clauses.append(
+                "EXISTS (SELECT 1 FROM knowledge_evidence evidence "
+                "JOIN im_messages evidence_message "
+                "ON evidence_message.id = evidence.message_id "
+                "WHERE evidence.candidate_id = candidate.id AND "
+                + " AND ".join(evidence_clauses)
+                + ")"
+            )
+            parameters.extend(evidence_parameters)
+
+        where_filters = " ".join(f"AND {clause}" for clause in clauses)
+        rows: list[sqlite3.Row] = []
+        if tokens:
+            match_query = " OR ".join(
+                f'"{token.replace(chr(34), chr(34) * 2)}"' for token in tokens
+            )
+            rows = connection.execute(
+                f"""
+                SELECT candidate.*, conversation.display_name AS conversation_name,
+                       conversation.source_id, source.name AS source_name,
+                       bm25(knowledge_fts) AS fts_rank,
+                       snippet(knowledge_fts, 1, '', '', ' … ', 28)
+                           AS search_snippet
+                FROM knowledge_fts
+                JOIN knowledge_candidates candidate
+                  ON candidate.id = knowledge_fts.candidate_id
+                JOIN im_conversations conversation
+                  ON conversation.id = candidate.conversation_id
+                JOIN conversation_policies policy
+                  ON policy.conversation_id = conversation.id
+                JOIN sources source ON source.id = conversation.source_id
+                WHERE knowledge_fts MATCH ?
+                  AND candidate.status = 'confirmed'
+                  AND policy.agent_enabled = 1
+                  {where_filters}
+                ORDER BY bm25(knowledge_fts), candidate.updated_at DESC
+                LIMIT ?
+                """,
+                (match_query, *parameters, limit),
+            ).fetchall()
+        if not rows:
+            like = f"%{query}%"
+            rows = connection.execute(
+                f"""
+                SELECT candidate.*, conversation.display_name AS conversation_name,
+                       conversation.source_id, source.name AS source_name,
+                       NULL AS fts_rank,
+                       substr(candidate.text_content, 1, 320) AS search_snippet
+                FROM knowledge_candidates candidate
+                JOIN im_conversations conversation
+                  ON conversation.id = candidate.conversation_id
+                JOIN conversation_policies policy
+                  ON policy.conversation_id = conversation.id
+                JOIN sources source ON source.id = conversation.source_id
+                WHERE candidate.status = 'confirmed'
+                  AND policy.agent_enabled = 1
+                  AND candidate.text_content LIKE ?
+                  {where_filters}
+                ORDER BY candidate.updated_at DESC
+                LIMIT ?
+                """,
+                (like, *parameters, limit),
+            ).fetchall()
+        return [self._agent_knowledge_result(connection, row) for row in rows]
+
+    @staticmethod
+    def _im_filter_clauses(
+        *,
+        source_ids: list[str],
+        conversation_ids: list[str],
+        participant_ids: list[str],
+        sent_from: datetime | None,
+        sent_to: datetime | None,
+        message_alias: str,
+        conversation_alias: str,
+    ) -> tuple[list[str], list[Any]]:
+        clauses: list[str] = []
+        parameters: list[Any] = []
+        for values, expression in (
+            (source_ids, f"{conversation_alias}.source_id"),
+            (conversation_ids, f"{message_alias}.conversation_id"),
+            (participant_ids, f"{message_alias}.sender_provider_id"),
+        ):
+            if values:
+                placeholders = ",".join("?" for _ in values)
+                clauses.append(f"{expression} IN ({placeholders})")
+                parameters.extend(values)
+        if sent_from is not None:
+            clauses.append(
+                f"COALESCE({message_alias}.sent_at, {message_alias}.observed_at) >= ?"
+            )
+            parameters.append(PocketService._search_time(sent_from))
+        if sent_to is not None:
+            clauses.append(
+                f"COALESCE({message_alias}.sent_at, {message_alias}.observed_at) <= ?"
+            )
+            parameters.append(PocketService._search_time(sent_to))
+        return clauses, parameters
+
+    @staticmethod
+    def _search_time(value: datetime) -> str:
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=UTC)
+        return value.astimezone(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
     @staticmethod
     def _agent_result(row: sqlite3.Row, *, fallback_score: bool) -> dict[str, Any]:
         rank = row["fts_rank"]
         score = 0.5 if fallback_score or rank is None else 1 / (1 + abs(rank))
         snippet = re.sub(r"\s+", " ", row["search_snippet"] or "").strip()
+        source_id = row["active_source_id"] or row["first_source_id"]
+        source = PocketService._agent_source_label(row)
+        metadata = json_loads(row["metadata_json"], {})
+        news = metadata.get("news_citation")
+        if isinstance(news, dict) and news.get("type") == "web_snapshot":
+            evidence = news.get("evidence")
+            safe_evidence = []
+            if isinstance(evidence, list):
+                for point in evidence[:4]:
+                    if not isinstance(point, dict):
+                        continue
+                    safe_evidence.append(
+                        {
+                            "snapshot_id": point.get("snapshot_id"),
+                            "snapshot_hash": point.get("snapshot_hash"),
+                            "field": point.get("field"),
+                            "start_offset": point.get("start_offset"),
+                            "end_offset": point.get("end_offset"),
+                            "offset_unit": point.get("offset_unit"),
+                            "excerpt": point.get("excerpt"),
+                        }
+                    )
+            citation = {
+                "type": "web_snapshot",
+                "entry_id": news.get("entry_id"),
+                "reliable_source_id": news.get("reliable_source_id"),
+                "publisher": news.get("publisher"),
+                "url": news.get("url"),
+                "url_trust": news.get("url_trust"),
+                "published_at": news.get("published_at"),
+                "collected_at": news.get("collected_at"),
+                "snapshot_id": news.get("snapshot_id"),
+                "snapshot_hash": news.get("snapshot_hash"),
+                "evidence": safe_evidence,
+            }
+            return {
+                "kind": "document",
+                "content_type": "news",
+                "item_id": row["id"],
+                "title": row["title"],
+                "snippet": snippet,
+                "source": news.get("publisher") or source,
+                "source_id": source_id,
+                "score": round(score, 6),
+                "authority": "governed",
+                "category": row["category"],
+                "tags": json_loads(row["tags_json"], []),
+                "updated_at": row["updated_at"],
+                "citations": [citation],
+            }
         return {
+            "kind": "document",
             "item_id": row["id"],
             "title": row["title"],
             "snippet": snippet,
-            "source": PocketService._agent_source_label(row),
+            "source": source,
+            "source_id": source_id,
             "score": round(score, 6),
+            "authority": "governed",
             "category": row["category"],
             "tags": json_loads(row["tags_json"], []),
             "updated_at": row["updated_at"],
+            "citations": [
+                {
+                    "type": "document",
+                    "item_id": row["id"],
+                    "source": source,
+                }
+            ],
+        }
+
+    @staticmethod
+    def _agent_im_message_result(row: sqlite3.Row) -> dict[str, Any]:
+        rank = row["fts_rank"]
+        score = 0.55 if rank is None else 1 / (1 + abs(rank))
+        snippet = re.sub(r"\s+", " ", row["search_snippet"] or "").strip()
+        conversation_name = row["conversation_name"] or "未命名会话"
+        source = f"{row['source_name']}/{conversation_name}"
+        citation = {
+            "type": "im_message",
+            "message_id": row["id"],
+            "provider_msgid": row["provider_msgid"],
+            "source_id": row["source_id"],
+            "conversation_id": row["conversation_id"],
+            "conversation_name": conversation_name,
+            "speaker": row["sender_display_name"],
+            "sent_at": row["sent_at"],
+            "observed_at": row["observed_at"],
+            "authority": row["authority"],
+        }
+        return {
+            "kind": "im_message",
+            "message_id": row["id"],
+            "title": conversation_name,
+            "snippet": snippet,
+            "source": source,
+            "source_id": row["source_id"],
+            "conversation_id": row["conversation_id"],
+            "conversation_name": conversation_name,
+            "speaker": row["sender_display_name"],
+            "sent_at": row["sent_at"],
+            "observed_at": row["observed_at"],
+            "authority": row["authority"],
+            "acquisition": row["acquisition"],
+            "score": round(score, 6),
+            "citations": [citation],
+        }
+
+    @staticmethod
+    def _agent_knowledge_result(
+        connection: sqlite3.Connection, row: sqlite3.Row
+    ) -> dict[str, Any]:
+        rank = row["fts_rank"]
+        score = 0.6 if rank is None else 1 / (1 + abs(rank))
+        snippet = re.sub(r"\s+", " ", row["search_snippet"] or "").strip()
+        conversation_name = row["conversation_name"] or "未命名会话"
+        evidence_rows = connection.execute(
+            """
+            SELECT message.id, message.provider_msgid,
+                   message.sender_display_name, message.sent_at,
+                   message.observed_at, message.authority,
+                   evidence.evidence_role, evidence.excerpt
+            FROM knowledge_evidence evidence
+            JOIN im_messages message ON message.id = evidence.message_id
+            WHERE evidence.candidate_id = ?
+            ORDER BY COALESCE(message.sent_at, message.observed_at), message.id
+            """,
+            (row["id"],),
+        ).fetchall()
+        citations = [
+            {
+                "type": "im_message",
+                "message_id": evidence["id"],
+                "provider_msgid": evidence["provider_msgid"],
+                "source_id": row["source_id"],
+                "conversation_id": row["conversation_id"],
+                "conversation_name": conversation_name,
+                "speaker": evidence["sender_display_name"],
+                "sent_at": evidence["sent_at"],
+                "observed_at": evidence["observed_at"],
+                "authority": evidence["authority"],
+                "role": evidence["evidence_role"],
+                "excerpt": evidence["excerpt"],
+            }
+            for evidence in evidence_rows
+        ]
+        return {
+            "kind": "knowledge",
+            "candidate_id": row["id"],
+            "title": {
+                "decision": "已确认决策",
+                "commitment": "已确认承诺",
+                "task": "已确认任务",
+            }.get(row["claim_type"], "已确认知识"),
+            "snippet": snippet,
+            "source": f"{row['source_name']}/{conversation_name}",
+            "source_id": row["source_id"],
+            "conversation_id": row["conversation_id"],
+            "conversation_name": conversation_name,
+            "claim_type": row["claim_type"],
+            "speaker": row["speaker"],
+            "authority": row["authority"],
+            "status": row["status"],
+            "score": round(score, 6),
+            "updated_at": row["updated_at"],
+            "citations": citations,
         }
 
     @staticmethod

@@ -3,6 +3,7 @@ import { useFocusEffect, useRouter } from "expo-router";
 import { StyleSheet, Text, View } from "react-native";
 
 import { BrandHeader, Screen } from "@/components/screen";
+import { WechatObserverCard } from "@/components/wechat-observer-card";
 import {
   Button,
   EmptyState,
@@ -135,7 +136,11 @@ export default function SourcesScreen() {
     }
   }
 
-  const healthyCount = resource.data.filter(
+  const standardSources = resource.data.filter(
+    (source) => !isWechatObserverType(source.type),
+  );
+  const observerCount = resource.data.length - standardSources.length;
+  const healthyCount = standardSources.filter(
     (source) => source.status === "healthy" || source.status === "syncing",
   ).length;
 
@@ -216,9 +221,20 @@ export default function SourcesScreen() {
           <View style={styles.overviewCopy}>
             <Text style={styles.overviewLabel}>自动同步状态</Text>
             <Text style={styles.overviewValue}>
-              {healthyCount}/{resource.data.length} 正常
+              {standardSources.length > 0
+                ? `${healthyCount}/${standardSources.length} 正常`
+                : "暂无"}
             </Text>
           </View>
+          {observerCount > 0 ? (
+            <>
+              <View style={styles.overviewDivider} />
+              <View style={styles.overviewCopy}>
+                <Text style={styles.overviewLabel}>网页观察器</Text>
+                <Text style={styles.overviewValue}>{observerCount} 个</Text>
+              </View>
+            </>
+          ) : null}
           <View style={styles.overviewDivider} />
           <View style={styles.overviewCopy}>
             <Text style={styles.overviewLabel}>等待进入治理</Text>
@@ -238,10 +254,10 @@ export default function SourcesScreen() {
         <EmptyState
           symbol="+"
           title="还没有同步源"
-          message="直接在手机上登记数据中心服务器中的文件夹。"
+          message="添加服务器文件夹，或连接本机微信网页版观察当前可见对话。"
           action={
             <Button
-              label="添加文件夹来源"
+              label="添加数据来源"
               icon="+"
               onPress={() => router.push("/add-source")}
             />
@@ -255,7 +271,9 @@ export default function SourcesScreen() {
           />
           {resource.data.map((source) => {
             const queued = queuedSourceIds.has(source.id) || recentlyQueued[source.id];
-            return (
+            return isWechatObserverType(source.type) ? (
+              <WechatObserverCard key={source.id} source={source} api={api} />
+            ) : (
               <SourceCard
                 key={source.id}
                 source={source}
@@ -298,6 +316,7 @@ function SourceCard({
     email: "邮箱",
     rss: "订阅",
     database: "数据库",
+    wechat_visible_web: "个人微信网页观察",
   };
 
   return (
@@ -351,6 +370,12 @@ function SourceCard({
         <Text style={styles.sourceError}>{source.errorMessage}</Text>
       ) : null}
     </View>
+  );
+}
+
+function isWechatObserverType(value: string): boolean {
+  return ["wechat_visible_web", "wechat_web_observer"].includes(
+    value.trim().toLowerCase(),
   );
 }
 

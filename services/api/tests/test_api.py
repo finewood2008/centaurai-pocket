@@ -49,7 +49,7 @@ def test_health_and_owner_boundary(
     assert health.json() == {
         "status": "ok",
         "service": "centaurai-pocket",
-        "version": "0.1.0",
+        "version": "0.3.0",
     }
 
     assert client.get("/api/v1/dashboard").status_code == 401

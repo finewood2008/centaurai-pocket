@@ -1,0 +1,9 @@
+{
+  "name": "centaurai-wechat-observer-extension",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "check": "node --check background.js && node --check observer-core.js && node --check content-script.js && node --check popup.js",
+    "test": "node --test test/*.test.cjs"
+  }
+}

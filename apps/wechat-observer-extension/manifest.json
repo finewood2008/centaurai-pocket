@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "CentaurAI 微信网页观察器",
+  "description": "只观察微信网页版当前已渲染的会话消息，并发送到本机 CentaurAI Pocket。",
+  "version": "0.1.0",
+  "permissions": [
+    "nativeMessaging",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://wx.qq.com/*"
+  ],
+  "background": {
+    "scripts": [
+      "background.js"
+    ]
+  },
+  "action": {
+    "default_title": "配置 CentaurAI 微信观察器",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://wx.qq.com/*"
+      ],
+      "js": [
+        "observer-core.js",
+        "content-script.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "centaur-pocket-wechat-observer@centaur.ai",
+      "strict_min_version": "109.0"
+    }
+  }
+}

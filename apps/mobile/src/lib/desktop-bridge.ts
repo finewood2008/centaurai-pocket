@@ -17,6 +17,7 @@ type CentaurPocketDesktopBridge = {
   getBootstrapSettings: () => Promise<DesktopBootstrapSettings>;
   request: (input: ApiRequest) => Promise<DesktopApiResponse>;
   selectFolder: () => Promise<string | null>;
+  openWechatWeb: () => Promise<boolean>;
 };
 
 declare global {
@@ -39,7 +40,8 @@ export function getDesktopBridge(): CentaurPocketDesktopBridge | null {
     !bridge ||
     typeof bridge.getBootstrapSettings !== "function" ||
     typeof bridge.request !== "function" ||
-    typeof bridge.selectFolder !== "function"
+    typeof bridge.selectFolder !== "function" ||
+    typeof bridge.openWechatWeb !== "function"
   ) {
     if (isDesktopRuntime()) {
       throw new Error("Electron 安全桥不可用，桌面操作已停止");
@@ -47,6 +49,20 @@ export function getDesktopBridge(): CentaurPocketDesktopBridge | null {
     return null;
   }
   return bridge;
+}
+
+export function canOpenWechatWebOnDesktop(): boolean {
+  return Boolean(getDesktopBridge());
+}
+
+export async function openWechatWebOnDesktop(): Promise<void> {
+  const bridge = getDesktopBridge();
+  if (!bridge) {
+    throw new Error("请在 CentaurAI Pocket 桌面端打开微信网页版");
+  }
+  if ((await bridge.openWechatWeb()) !== true) {
+    throw new Error("桌面端没有确认打开微信网页版");
+  }
 }
 
 export async function selectDesktopFolder(): Promise<string | null> {

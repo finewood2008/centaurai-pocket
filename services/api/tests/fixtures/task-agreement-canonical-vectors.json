@@ -1,0 +1,62 @@
+[
+  {
+    "name": "v1-chinese-duplicates-and-lf",
+    "document": {
+      "schema": "centaur.task-agreement.v1",
+      "workspace_id": "ws_default",
+      "task_id": "task-vector-1",
+      "agreement_id": "agreement-vector-1",
+      "revision_no": 1,
+      "parent_digest": null,
+      "proposer_role": "issuer",
+      "proposer_member_id": "member_owner",
+      "responder_role": "assignee",
+      "responder_member_id": "member_external",
+      "issuer_member_id": "member_owner",
+      "assignee_member_id": "member_external",
+      "acceptance_owner_id": "member_owner",
+      "domain": "work",
+      "tier": "strategic",
+      "priority": "high",
+      "title": "完成客户迁移",
+      "purpose": "保护交付节点",
+      "objective": "全部批次按期完成",
+      "strategy": "先演练\n再分批迁移",
+      "key_points": ["保留回滚点", "保留回滚点"],
+      "acceptance_criteria": ["迁移日志完整", "抽检通过"],
+      "due_at": "2026-08-20T10:00:00Z"
+    },
+    "canonical": "{\"acceptance_criteria\":[\"迁移日志完整\",\"抽检通过\"],\"acceptance_owner_id\":\"member_owner\",\"agreement_id\":\"agreement-vector-1\",\"assignee_member_id\":\"member_external\",\"domain\":\"work\",\"due_at\":\"2026-08-20T10:00:00Z\",\"issuer_member_id\":\"member_owner\",\"key_points\":[\"保留回滚点\",\"保留回滚点\"],\"objective\":\"全部批次按期完成\",\"parent_digest\":null,\"priority\":\"high\",\"proposer_member_id\":\"member_owner\",\"proposer_role\":\"issuer\",\"purpose\":\"保护交付节点\",\"responder_member_id\":\"member_external\",\"responder_role\":\"assignee\",\"revision_no\":1,\"schema\":\"centaur.task-agreement.v1\",\"strategy\":\"先演练\\n再分批迁移\",\"task_id\":\"task-vector-1\",\"tier\":\"strategic\",\"title\":\"完成客户迁移\",\"workspace_id\":\"ws_default\"}",
+    "digest": "sha256:3038d743b1cda7c9f4295d79c3e0cf8fea3617c4ae93cb6d0ddc423c2dedbb40"
+  },
+  {
+    "name": "v1-nfc-emoji-quotes-and-backslash",
+    "document": {
+      "schema": "centaur.task-agreement.v1",
+      "workspace_id": "ws_default",
+      "task_id": "task-vector-2",
+      "agreement_id": "agreement-vector-2",
+      "revision_no": 2,
+      "parent_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "proposer_role": "assignee",
+      "proposer_member_id": "member_external",
+      "responder_role": "issuer",
+      "responder_member_id": "member_owner",
+      "issuer_member_id": "member_owner",
+      "assignee_member_id": "member_external",
+      "acceptance_owner_id": "member_owner",
+      "domain": "personal",
+      "tier": "standard",
+      "priority": "normal",
+      "title": "Café 🚀 \"A\\B\"",
+      "purpose": "保留 NFC 文本",
+      "objective": "emoji 😀 可复验",
+      "strategy": "第一行\n第二行包含 \\ 与 \"",
+      "key_points": ["顺序一", "顺序二"],
+      "acceptance_criteria": ["逐字节一致"],
+      "due_at": null
+    },
+    "canonical": "{\"acceptance_criteria\":[\"逐字节一致\"],\"acceptance_owner_id\":\"member_owner\",\"agreement_id\":\"agreement-vector-2\",\"assignee_member_id\":\"member_external\",\"domain\":\"personal\",\"due_at\":null,\"issuer_member_id\":\"member_owner\",\"key_points\":[\"顺序一\",\"顺序二\"],\"objective\":\"emoji 😀 可复验\",\"parent_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"priority\":\"normal\",\"proposer_member_id\":\"member_external\",\"proposer_role\":\"assignee\",\"purpose\":\"保留 NFC 文本\",\"responder_member_id\":\"member_owner\",\"responder_role\":\"issuer\",\"revision_no\":2,\"schema\":\"centaur.task-agreement.v1\",\"strategy\":\"第一行\\n第二行包含 \\\\ 与 \\\"\",\"task_id\":\"task-vector-2\",\"tier\":\"standard\",\"title\":\"Café 🚀 \\\"A\\\\B\\\"\",\"workspace_id\":\"ws_default\"}",
+    "digest": "sha256:a72af32ee51f663b995bd7af5729e9005ab06907d4aa3abe8e44f1024f8d5dea"
+  }
+]

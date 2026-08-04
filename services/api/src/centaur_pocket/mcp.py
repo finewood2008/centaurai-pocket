@@ -29,8 +29,9 @@ KNOWLEDGE_RETRIEVE_TOOL: dict[str, Any] = {
     "name": TOOL_NAME,
     "title": "Retrieve governed personal knowledge",
     "description": (
-        "Search the owner's governed private data. Only items in the ready state "
-        "are visible; no dataset_ids argument is required."
+        "Search the owner's governed private data. Ready documents, explicitly "
+        "opted-in IM messages, and confirmed IM knowledge are visible. IM results "
+        "include message-level citations; no dataset_ids argument is required."
     ),
     "inputSchema": {
         "type": "object",

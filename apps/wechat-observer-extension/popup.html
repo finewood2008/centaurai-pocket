@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CentaurAI 微信观察器</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <span class="mark">C</span>
+        <div>
+          <h1>微信网页观察器</h1>
+          <p>仅采集当前页面已经显示的消息</p>
+        </div>
+      </header>
+      <form id="pairing-form">
+        <label>
+          来源 ID
+          <input id="source-id" autocomplete="off" maxlength="128" required />
+        </label>
+        <label>
+          一次性配对码
+          <input id="pairing-code" type="password" autocomplete="one-time-code" maxlength="4096" required />
+        </label>
+        <details>
+          <summary>高级设置</summary>
+          <label>
+            Pocket 本机地址
+            <input id="api-base" inputmode="url" value="http://127.0.0.1:8718" required />
+          </label>
+        </details>
+        <button type="submit">安全配对</button>
+      </form>
+      <p id="status" role="status" aria-live="polite"></p>
+      <p class="notice">不会读取 Cookie，也不会自动点击、滚动或下载附件。</p>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

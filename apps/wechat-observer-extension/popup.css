@@ -1,0 +1,114 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, "Noto Sans SC", system-ui, sans-serif;
+  background: #07110f;
+  color: #edf8f2;
+}
+
+body {
+  width: 340px;
+  margin: 0;
+}
+
+main {
+  padding: 18px;
+}
+
+header {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 18px;
+}
+
+.mark {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border: 1px solid #54df9d;
+  border-radius: 12px;
+  color: #54df9d;
+  font-weight: 800;
+}
+
+h1,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: 16px;
+}
+
+header p,
+.notice {
+  margin-top: 3px;
+  color: #8ca9a0;
+  font-size: 12px;
+}
+
+label {
+  display: grid;
+  gap: 6px;
+  margin: 12px 0;
+  color: #bfd1ca;
+  font-size: 12px;
+}
+
+input {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 10px 11px;
+  border: 1px solid #28473d;
+  border-radius: 9px;
+  outline: none;
+  background: #0d1d18;
+  color: #edf8f2;
+}
+
+input:focus {
+  border-color: #54df9d;
+}
+
+details {
+  color: #8ca9a0;
+  font-size: 12px;
+}
+
+button {
+  width: 100%;
+  margin-top: 14px;
+  padding: 11px;
+  border: 0;
+  border-radius: 9px;
+  background: #54df9d;
+  color: #062218;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+#status {
+  min-height: 18px;
+  margin-top: 12px;
+  color: #8ca9a0;
+  font-size: 12px;
+}
+
+#status.success {
+  color: #54df9d;
+}
+
+#status.error {
+  color: #ff8e8e;
+}
+
+.notice {
+  margin-top: 12px;
+  line-height: 1.5;
+}

@@ -6,6 +6,26 @@ application="${desktop_root}/release/linux-unpacked/centaurai-pocket"
 pocket_data_root="${CENTAURAI_POCKET_DATA_DIR:-${HOME}/.local/share/centaurai-pocket}"
 pocket_profile_root="${pocket_data_root}/desktop-profile"
 launcher_log="${pocket_data_root}/desktop-launcher.log"
+task_execution_origin_file="${pocket_data_root}/task-execution-public-origin"
+
+if [[ ! -v CENTAURAI_POCKET_TASK_EXECUTION_PUBLIC_ORIGIN && \
+  -e "${task_execution_origin_file}" ]]; then
+  if [[ -L "${task_execution_origin_file}" ]] || \
+    [[ ! -f "${task_execution_origin_file}" ]] || \
+    [[ ! -O "${task_execution_origin_file}" ]] || \
+    [[ "$(stat -c '%a' "${task_execution_origin_file}" 2>/dev/null || true)" != "600" ]]; then
+    echo "任务执行公开 Origin 配置文件必须是当前用户所有的 0600 普通文件。" >&2
+    exit 1
+  fi
+  mapfile -t task_execution_origin_lines <"${task_execution_origin_file}"
+  if [[ "${#task_execution_origin_lines[@]}" -ne 1 ]] || \
+    [[ ! "${task_execution_origin_lines[0]}" =~ ^https://(\[[0-9A-Fa-f:.]+\]|[a-z0-9]([a-z0-9.-]*[a-z0-9])?)(:[0-9]{1,5})?/?$ ]] || \
+    [[ "${task_execution_origin_lines[0]}" =~ :443/?$ ]]; then
+    echo "任务执行公开 Origin 配置必须是单行规范 HTTPS Origin。" >&2
+    exit 1
+  fi
+  export CENTAURAI_POCKET_TASK_EXECUTION_PUBLIC_ORIGIN="${task_execution_origin_lines[0]}"
+fi
 
 if [[ ! -x "${application}" ]]; then
   echo "CentaurAI Pocket 桌面应用尚未构建：${application}" >&2
@@ -59,6 +79,13 @@ if command -v bwrap >/dev/null 2>&1; then
   fi
   if [[ -d "${HOME}/.pki" ]]; then
     bwrap_args+=(--bind "${pocket_profile_root}/pki" "${HOME}/.pki")
+  fi
+  if [[ -v CENTAURAI_POCKET_TASK_EXECUTION_PUBLIC_ORIGIN ]]; then
+    bwrap_args+=(
+      --setenv
+      CENTAURAI_POCKET_TASK_EXECUTION_PUBLIC_ORIGIN
+      "${CENTAURAI_POCKET_TASK_EXECUTION_PUBLIC_ORIGIN}"
+    )
   fi
   launch bwrap \
     "${bwrap_args[@]}" \

@@ -11,6 +11,7 @@ import {
 } from "react-native";
 
 import { BrandHeader, Screen } from "@/components/screen";
+import { MobileDevicesCard } from "@/components/mobile-devices-card";
 import { Button, LoadingCards, Notice, Pill, SectionHeader } from "@/components/ui";
 import { usePocket } from "@/context/pocket-context";
 import { apiBaseUrl, serverUrlSecurityError } from "@/lib/api";
@@ -35,6 +36,8 @@ function ReadySettingsScreen() {
   const router = useRouter();
   const {
     settings,
+    api,
+    isConfigured,
     mutations,
     inactiveMutationCount,
     isFlushing,
@@ -231,6 +234,14 @@ function ReadySettingsScreen() {
         <View style={styles.lock}>
           <Text style={styles.lockText}>⌁</Text>
         </View>
+      </View>
+
+      <View style={styles.section}>
+        <SectionHeader
+          title="手机设备"
+          caption="一次性配对、短期访问、随时撤销"
+        />
+        <MobileDevicesCard api={api} enabled={isConfigured} />
       </View>
 
       <View style={styles.section}>
@@ -448,7 +459,7 @@ function ReadySettingsScreen() {
       </View>
 
       <View style={styles.identity}>
-        <Text style={styles.identityName}>CentaurAI Pocket · 0.1.0</Text>
+        <Text style={styles.identityName}>CentaurAI Pocket · 0.3.0</Text>
         <Text style={styles.identityMeta}>
           {Platform.OS === "android"
             ? "ai.centaur.pocket"

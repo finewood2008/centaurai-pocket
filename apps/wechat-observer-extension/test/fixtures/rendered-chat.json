@@ -1,0 +1,44 @@
+{
+  "tag": "section",
+  "id": "chatArea",
+  "attributes": {
+    "data-username": "@@leadership-room",
+    "data-conversation-name": "管理层例会"
+  },
+  "children": [
+    {
+      "tag": "div",
+      "classes": ["message", "you"],
+      "attributes": {
+        "data-cm": "{\"msgId\":\"m-1001\",\"actualSender\":\"@alice\",\"msgType\":1}"
+      },
+      "children": [
+        {
+          "tag": "div",
+          "classes": ["nickname"],
+          "children": [
+            {"tag": "span", "classes": ["nickname_text"], "text": "Alice"}
+          ]
+        },
+        {"tag": "div", "classes": ["plain"], "text": " 明天 10:00 开会\n\n\n请带方案 "},
+        {"tag": "span", "classes": ["time"], "text": "昨天 18:30"}
+      ]
+    },
+    {
+      "tag": "div",
+      "id": "prerender",
+      "children": [
+        {
+          "tag": "div",
+          "classes": ["message", "you"],
+          "attributes": {
+            "data-cm": "{\"msgId\":\"must-not-leak\",\"actualSender\":\"@mallory\",\"msgType\":1}"
+          },
+          "children": [
+            {"tag": "div", "classes": ["plain"], "text": "预渲染秘密"}
+          ]
+        }
+      ]
+    }
+  ]
+}
