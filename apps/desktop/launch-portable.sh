@@ -27,6 +27,27 @@ if [[ ! -v CENTAURAI_POCKET_TASK_EXECUTION_PUBLIC_ORIGIN && \
   export CENTAURAI_POCKET_TASK_EXECUTION_PUBLIC_ORIGIN="${task_execution_origin_lines[0]}"
 fi
 
+# 秘书 Agent 模型编排（§3.4）配置：可选文件，键值逐行、白名单键名。
+# 与 origin 文件同样的安全要求：当前用户所有的 0600 普通文件。
+assistant_env_file="${pocket_data_root}/assistant-env"
+if [[ -e "${assistant_env_file}" ]]; then
+  if [[ -L "${assistant_env_file}" ]] || \
+    [[ ! -f "${assistant_env_file}" ]] || \
+    [[ ! -O "${assistant_env_file}" ]] || \
+    [[ "$(stat -c '%a' "${assistant_env_file}" 2>/dev/null || true)" != "600" ]]; then
+    echo "Assistant 配置文件必须是当前用户所有的 0600 普通文件。" >&2
+    exit 1
+  fi
+  while IFS= read -r assistant_env_line; do
+    [[ -z "${assistant_env_line}" || "${assistant_env_line}" == \#* ]] && continue
+    if [[ ! "${assistant_env_line}" =~ ^(CENTAURAI_POCKET_ASSISTANT_(PROVIDER|MODEL|CLOUD_PROVIDER|CLOUD_MODEL|CLOUD_API_KEY|CLOUD_BASE_URL)|CENTAURAI_POCKET_OLLAMA_URL)=[[:print:]]*$ ]]; then
+      echo "Assistant 配置只接受 CENTAURAI_POCKET_ASSISTANT_* / CENTAURAI_POCKET_OLLAMA_URL 键值行。" >&2
+      exit 1
+    fi
+    export "${assistant_env_line?}"
+  done <"${assistant_env_file}"
+fi
+
 if [[ ! -x "${application}" ]]; then
   echo "CentaurAI Pocket 桌面应用尚未构建：${application}" >&2
   echo "请先运行 scripts/build-desktop.sh。" >&2
