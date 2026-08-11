@@ -104,6 +104,38 @@ class _InvalidParams(ValueError):
     """A request used valid JSON-RPC but invalid method parameters."""
 
 
+class ToolArgumentError(ValueError):
+    """An extra tool rejected its arguments; maps to JSON-RPC invalid params."""
+
+
+class MCPTool:
+    """One additional tool: a definition dict plus an arguments handler.
+
+    The handler receives the validated-as-object ``arguments`` mapping and
+    returns a JSON-serializable mapping. It raises :class:`ToolArgumentError`
+    for bad arguments; any other exception becomes an ``isError`` tool result.
+    """
+
+    __slots__ = ("definition", "handler")
+
+    def __init__(
+        self,
+        definition: Mapping[str, Any],
+        handler: Callable[[dict[str, Any]], Mapping[str, Any]],
+    ) -> None:
+        name = definition.get("name")
+        if not isinstance(name, str) or not name:
+            raise ValueError("tool definition requires a non-empty name")
+        if not callable(handler):
+            raise TypeError("tool handler must be callable")
+        self.definition = dict(definition)
+        self.handler = handler
+
+    @property
+    def name(self) -> str:
+        return str(self.definition["name"])
+
+
 class _InvalidRequest(ValueError):
     """A decoded value was not a valid MCP JSON-RPC request."""
 
@@ -200,10 +232,16 @@ class MCPServer:
         server_name: str = "centaurai-pocket-mcp",
         server_title: str = "CentaurAI Pocket MCP",
         server_version: str = "0.1.0",
+        extra_tools: list[MCPTool] | None = None,
     ) -> None:
         if not callable(search):
             raise TypeError("search must be callable")
         self._search = search
+        self._extra_tools: dict[str, MCPTool] = {}
+        for tool in extra_tools or []:
+            if tool.name == TOOL_NAME or tool.name in self._extra_tools:
+                raise ValueError(f"duplicate tool name: {tool.name}")
+            self._extra_tools[tool.name] = tool
         self._server_info = {
             "name": _non_empty_string(server_name, label="server_name"),
             "title": _non_empty_string(server_title, label="server_title"),
@@ -373,8 +411,7 @@ class MCPServer:
         _validate_meta(params)
         return {}
 
-    @staticmethod
-    def _list_tools(params: dict[str, Any]) -> dict[str, Any]:
+    def _list_tools(self, params: dict[str, Any]) -> dict[str, Any]:
         _validate_keys(
             params,
             allowed={"cursor", "_meta"},
@@ -386,7 +423,12 @@ class MCPServer:
             raise _InvalidParams(
                 "params.cursor is not valid because this tool list has one page"
             )
-        return {"tools": [copy.deepcopy(KNOWLEDGE_RETRIEVE_TOOL)]}
+        return {
+            "tools": [
+                copy.deepcopy(KNOWLEDGE_RETRIEVE_TOOL),
+                *(copy.deepcopy(tool.definition) for tool in self._extra_tools.values()),
+            ]
+        }
 
     def _call_tool(self, params: dict[str, Any]) -> dict[str, Any]:
         _validate_keys(
@@ -397,12 +439,14 @@ class MCPServer:
         )
         _validate_meta(params)
         name = _non_empty_string(params["name"], label="params.name")
-        if name != TOOL_NAME:
+        if name != TOOL_NAME and name not in self._extra_tools:
             raise _InvalidParams(f"unknown tool: {name}")
 
         arguments = _require_object(
             params.get("arguments", {}), label="params.arguments"
         )
+        if name != TOOL_NAME:
+            return self._call_extra_tool(self._extra_tools[name], arguments)
         query, limit, filters = self._knowledge_arguments(arguments)
         try:
             callback_result = self._search(
@@ -437,6 +481,43 @@ class MCPServer:
         except (TypeError, ValueError) as exc:
             raise TypeError("search callback returned non-JSON data") from exc
         self._validate_search_result(structured)
+        return {
+            "content": [{"type": "text", "text": text}],
+            "structuredContent": structured,
+            "isError": False,
+        }
+
+    @staticmethod
+    def _call_extra_tool(
+        tool: MCPTool,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            callback_result = tool.handler(arguments)
+        except ToolArgumentError as exc:
+            raise _InvalidParams(str(exc)) from exc
+        # Tool callbacks are an extension boundary; any provider failure is
+        # represented as an MCP tool error rather than crashing the transport.
+        except Exception as exc:  # noqa: BLE001
+            message = str(exc).strip() or exc.__class__.__name__
+            return {
+                "content": [
+                    {"type": "text", "text": f"{tool.name} failed: {message[:500]}"}
+                ],
+                "isError": True,
+            }
+        if not isinstance(callback_result, Mapping):
+            raise TypeError("tool handler must return a mapping")
+        try:
+            text = json.dumps(
+                dict(callback_result),
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+            )
+            structured = json.loads(text)
+        except (TypeError, ValueError) as exc:
+            raise TypeError("tool handler returned non-JSON data") from exc
         return {
             "content": [{"type": "text", "text": text}],
             "structuredContent": structured,
@@ -543,4 +624,6 @@ __all__ = [
     "PROTOCOL_VERSION",
     "TOOL_NAME",
     "MCPServer",
+    "MCPTool",
+    "ToolArgumentError",
 ]

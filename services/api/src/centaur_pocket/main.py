@@ -27,6 +27,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from . import __version__
+from .assistant import ProposalStore, build_assistant_tools
 from .config import Settings
 from .database import Database
 from .mail_router import create_mail_router
@@ -649,6 +650,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         mail_service.initialize()
         service.attach_outlook_mail(mail_service)
         app.state.mail_service = mail_service
+        proposal_store = ProposalStore(service.database)
+        proposal_store.initialize()
+        app.state.proposals = proposal_store
         scheduler_task: asyncio.Task[None] | None = None
 
         async def scheduler() -> None:
@@ -1346,6 +1350,187 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             idempotency_key=idempotency_key,
         )
 
+    # ------------------------------------------------------------------
+    # Assistant proposals (§3.1/§3.3): the owner-gated half of the proposal
+    # tools. Reads list the queue; apply is the only path into the workspace
+    # and rides the same service methods, device id and idempotency contract
+    # as the owner's own manual writes.
+    # ------------------------------------------------------------------
+
+    def _materialize_assistant_proposal(
+        request: Request,
+        kind: str,
+        fields: dict[str, Any],
+        *,
+        idempotency_key: str,
+        device_id: str,
+    ) -> str:
+        from pydantic import ValidationError
+
+        from .workspace.schemas import (
+            BusinessTaskCreate,
+            CalendarEntryCreate,
+            MemoCreate,
+            TaskChangeCreate,
+        )
+        from .workspace.service import DEFAULT_OWNER_ID
+
+        workspace_service = request.app.state.workspace_service
+        mail_service = request.app.state.mail_service
+        workspace_id = "ws_default"
+        try:
+            if kind == "memo":
+                payload = MemoCreate.model_validate({
+                    "domain": fields.get("domain", "work"),
+                    "urgency": fields.get("urgency", "normal"),
+                    "title": fields["title"],
+                    "content": fields["content"],
+                    "source": {
+                        "source_kind": "system",
+                        "source_ref": "assistant-proposal",
+                        "authority": "user_provided",
+                    },
+                })
+                entity = workspace_service.create_memo(
+                    workspace_id,
+                    payload.model_dump(mode="json"),
+                    idempotency_key=idempotency_key,
+                    device_id=device_id,
+                )
+                return f"memo:{entity['id']}"
+            if kind == "task":
+                payload = BusinessTaskCreate.model_validate({
+                    "domain": fields.get("domain", "work"),
+                    "title": fields["title"],
+                    "purpose": fields["purpose"],
+                    "objective": fields["objective"],
+                    "strategy": fields["strategy"],
+                    "acceptance_criteria": fields["acceptance_criteria"],
+                    "issuer_member_id": DEFAULT_OWNER_ID,
+                    "assignee_member_id": fields["assignee_member_id"],
+                    "acceptance_owner_id": DEFAULT_OWNER_ID,
+                    **({"start_at": fields["start_at"]} if fields.get("start_at") else {}),
+                    **({"due_at": fields["due_at"]} if fields.get("due_at") else {}),
+                })
+                entity = workspace_service.create_task(
+                    workspace_id,
+                    payload.model_dump(mode="json"),
+                    idempotency_key=idempotency_key,
+                    device_id=device_id,
+                )
+                return f"task:{entity['id']}"
+            if kind == "calendar":
+                workspace = workspace_service.bootstrap(workspace_id)["workspace"]
+                payload = CalendarEntryCreate.model_validate({
+                    "domain": fields.get("domain", "work"),
+                    "title": fields["title"],
+                    **({"description": fields["description"]} if fields.get("description") else {}),
+                    "start_at": fields["start_at"],
+                    "end_at": fields["end_at"],
+                    "timezone": workspace["timezone"],
+                    "kind": fields.get("kind", "focus"),
+                })
+                entity = workspace_service.create_calendar_entry(
+                    workspace_id,
+                    payload.model_dump(mode="json"),
+                    idempotency_key=idempotency_key,
+                    device_id=device_id,
+                )
+                return f"calendar:{entity['id']}"
+            if kind == "task_change":
+                task_id = fields["task_id"]
+                tasks = workspace_service.list_tasks(workspace_id)["items"]
+                task = next((item for item in tasks if item["id"] == task_id), None)
+                if task is None:
+                    raise PocketError(409, "提议指向的任务已不存在")
+                payload = TaskChangeCreate.model_validate({
+                    "change_type": fields["change_type"],
+                    "base_version": task["version"],
+                    "reason": fields["reason"],
+                    "patch": fields["patch"],
+                })
+                entity = workspace_service.create_task_change(
+                    workspace_id,
+                    task_id,
+                    payload.model_dump(mode="json"),
+                    idempotency_key=idempotency_key,
+                    device_id=device_id,
+                )
+                change = entity.get("change") if isinstance(entity.get("change"), dict) else entity
+                return f"task_change:{change.get('id', task_id)}"
+            if kind == "mail_reply":
+                message = mail_service.get_message(fields["message_id"])
+                draft = mail_service.create_reply_draft(
+                    fields["message_id"],
+                    int(message["version"]),
+                    fields["body_text"],
+                    idempotency_key=idempotency_key,
+                    device_id=device_id,
+                )
+                draft_view = draft.get("draft") if isinstance(draft.get("draft"), dict) else draft
+                return f"mail_draft:{draft_view.get('id', fields['message_id'])}"
+        except ValidationError as error:
+            raise PocketError(422, f"提议字段无效：{error.errors()[0]['msg']}") from error
+        except KeyError as error:
+            raise PocketError(422, f"提议缺少字段：{error.args[0]}") from error
+        raise PocketError(422, f"未知提议类型：{kind}")
+
+    @application.get(f"{API_PREFIX}/assistant/proposals")
+    def list_assistant_proposals(
+        request: Request,
+        proposal_status: Literal["pending", "applied", "dismissed"] = Query(
+            default="pending", alias="status"
+        ),
+        service: PocketService = Depends(require_owner),
+    ) -> dict:
+        return request.app.state.proposals.list(proposal_status)
+
+    @application.post(f"{API_PREFIX}/assistant/proposals/{{proposal_id}}/apply")
+    def apply_assistant_proposal(
+        proposal_id: str,
+        request: Request,
+        idempotency_key: Annotated[
+            str, Header(alias="Idempotency-Key", min_length=8, max_length=200)
+        ],
+        device_id: Annotated[
+            str, Header(alias="X-Device-ID", min_length=1, max_length=200)
+        ],
+        payload: dict[str, Any] | None = Body(default=None),
+        service: PocketService = Depends(require_owner),
+    ) -> dict:
+        if payload is not None and set(payload) - {"fields"}:
+            raise PocketError(422, "apply 请求只接受 fields 字段")
+        overrides = (payload or {}).get("fields") or {}
+        if not isinstance(overrides, dict):
+            raise PocketError(422, "fields 必须是对象")
+        proposals: ProposalStore = request.app.state.proposals
+        proposal = proposals.get(proposal_id)
+        if proposal["status"] != "pending":
+            raise PocketError(409, "提议已被处理，不能重复决定")
+        allowed_override_keys = set(proposal["fields"])
+        unknown = set(overrides) - allowed_override_keys
+        if unknown:
+            raise PocketError(422, "只能修改提议中已有的字段")
+        merged = {**proposal["fields"], **overrides}
+        result_ref = _materialize_assistant_proposal(
+            request,
+            proposal["kind"],
+            merged,
+            idempotency_key=idempotency_key,
+            device_id=device_id,
+        )
+        decided = proposals.decide(proposal_id, status="applied", result_ref=result_ref)
+        return {"proposal": decided, "result_ref": result_ref}
+
+    @application.post(f"{API_PREFIX}/assistant/proposals/{{proposal_id}}/dismiss")
+    def dismiss_assistant_proposal(
+        proposal_id: str,
+        request: Request,
+        service: PocketService = Depends(require_owner),
+    ) -> dict:
+        proposals: ProposalStore = request.app.state.proposals
+        return {"proposal": proposals.decide(proposal_id, status="dismissed")}
+
     @application.post(f"{API_PREFIX}/agent/search")
     def agent_search(
         payload: AgentSearchRequest,
@@ -1438,6 +1623,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 category=filters["category"],
             ),
             server_version=__version__,
+            # §3.3: read-only projections plus proposal tools. Forbidden
+            # capabilities are absent from this list, not guarded by prompts.
+            extra_tools=build_assistant_tools(
+                request.app.state.workspace_service,
+                service,
+                request.app.state.mail_service,
+                request.app.state.proposals,
+            ),
         )
         message = handler.handle_json(body)
         if message is None:
