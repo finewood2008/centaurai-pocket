@@ -47,9 +47,91 @@ const CONTENT_TYPES = new Map([
   [".woff2", "font/woff2"],
 ]);
 
+/**
+ * 局域网访问（显式开启）。
+ *
+ * 默认受管 API 只绑 127.0.0.1。数据目录下存在 `lan-access` 文件
+ * （当前用户所有、0600 普通文件、首个有效行是字面 `enabled`）时，
+ * 视为主人显式开启局域网访问：API 改绑 0.0.0.0，并把本机私网网卡
+ * 的秘书/开发端口 origin 追加进 CORS 白名单。文件不合规直接失败，
+ * 绝不静默降级成"部分开启"。
+ */
+const LAN_ACCESS_FILE = "lan-access";
+const LAN_CLIENT_PORTS = [17818, 8081, 19006];
+const DEFAULT_LOCAL_CORS_ORIGINS = [
+  "http://localhost:8081",
+  "http://127.0.0.1:8081",
+  "http://localhost:19006",
+  "http://127.0.0.1:19006",
+  "http://127.0.0.1:17818",
+];
+
+function isPrivateIpv4(address) {
+  const parts = address.split(".").map(Number);
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part))) {
+    return false;
+  }
+  if (parts[0] === 10) return true;
+  if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
+  if (parts[0] === 192 && parts[1] === 168) return true;
+  return false;
+}
+
+function resolveLanAccess(
+  dataRoot,
+  {
+    lstatSync = fs.lstatSync,
+    readFileSync = fs.readFileSync,
+    getuid = process.getuid,
+  } = {},
+) {
+  const filePath = path.join(dataRoot, LAN_ACCESS_FILE);
+  let stat;
+  try {
+    stat = lstatSync(filePath);
+  } catch {
+    return { enabled: false };
+  }
+  const uid = typeof getuid === "function" ? getuid() : undefined;
+  if (
+    !stat.isFile() ||
+    stat.isSymbolicLink() ||
+    (stat.mode & 0o777) !== 0o600 ||
+    (uid !== undefined && stat.uid !== uid)
+  ) {
+    throw new Error(
+      "局域网访问配置 lan-access 必须是当前用户所有的 0600 普通文件。",
+    );
+  }
+  const lines = readFileSync(filePath, "utf8")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"));
+  if (lines.length !== 1 || lines[0] !== "enabled") {
+    throw new Error(
+      "局域网访问配置 lan-access 只接受单行字面值 enabled（可含注释行）。",
+    );
+  }
+  return { enabled: true };
+}
+
+function lanCorsOrigins(interfaces) {
+  const origins = [];
+  for (const entries of Object.values(interfaces ?? {})) {
+    for (const entry of entries ?? []) {
+      if (entry.family !== "IPv4" || entry.internal) continue;
+      if (!isPrivateIpv4(entry.address)) continue;
+      for (const port of LAN_CLIENT_PORTS) {
+        origins.push(`http://${entry.address}:${port}`);
+      }
+    }
+  }
+  return origins;
+}
+
 function buildSidecarEnvironment(
   baseEnvironment,
-  { dataRoot, sessionOwnerToken, readyNonce },
+  { dataRoot, sessionOwnerToken, readyNonce, lan },
 ) {
   const environment = { ...baseEnvironment };
   const taskExecutionPublicOrigin =
@@ -65,6 +147,13 @@ function buildSidecarEnvironment(
   environment.CENTAURAI_POCKET_DATA_DIR = dataRoot;
   environment.CENTAURAI_POCKET_HOST = "127.0.0.1";
   environment.CENTAURAI_POCKET_PORT = "8718";
+  if (lan?.enabled) {
+    environment.CENTAURAI_POCKET_HOST = "0.0.0.0";
+    environment.CENTAURAI_POCKET_CORS_ORIGINS = [
+      ...DEFAULT_LOCAL_CORS_ORIGINS,
+      ...(lan.corsOrigins ?? []),
+    ].join(",");
+  }
   environment.CENTAURAI_POCKET_DESKTOP_SESSION_TOKEN = sessionOwnerToken;
   environment.CENTAURAI_POCKET_DESKTOP_NONCE = readyNonce;
   environment.CENTAURAI_POCKET_DESKTOP_READY_FD = "3";
@@ -216,6 +305,8 @@ module.exports = {
   contentTypeFor,
   desktopPortalOpenUriArgs,
   isPocketHealth,
+  lanCorsOrigins,
   normalizeApiRequest,
   resolveContentPath,
+  resolveLanAccess,
 };

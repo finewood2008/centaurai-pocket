@@ -19,6 +19,8 @@ const path = require("node:path");
 const {
   WECHAT_WEB_URL,
   buildSidecarEnvironment,
+  lanCorsOrigins,
+  resolveLanAccess,
   contentTypeFor,
   desktopPortalOpenUriArgs,
   isPocketHealth,
@@ -355,11 +357,22 @@ function startApiChild(sessionOwnerToken) {
   }
 
   const readyNonce = crypto.randomBytes(32).toString("base64url");
+  // 局域网访问是显式开关：lan-access 文件不合规直接抛错终止启动（fail closed）
+  const lanAccess = resolveLanAccess(root);
   const environment = buildSidecarEnvironment(process.env, {
     dataRoot: root,
     sessionOwnerToken,
     readyNonce,
+    lan: lanAccess.enabled
+      ? { enabled: true, corsOrigins: lanCorsOrigins(os.networkInterfaces()) }
+      : undefined,
   });
+  if (lanAccess.enabled) {
+    console.log(
+      "[pocket-desktop] 局域网访问已开启：API 绑定 0.0.0.0:8718，" +
+        "CORS 已扩展本机私网 origin。",
+    );
+  }
 
   apiChild = spawn(command.executable, command.args, {
     cwd: command.cwd,

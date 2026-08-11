@@ -257,3 +257,73 @@ test("portable launcher forwards only an explicitly configured public origin", (
     publicOrigin,
   ]);
 });
+
+test("resolveLanAccess: 缺文件即关闭，合规文件开启，越权文件直接失败", () => {
+  const { resolveLanAccess } = require("../runtime.cjs");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pocket-lan-"));
+  try {
+    assert.deepEqual(resolveLanAccess(root), { enabled: false });
+
+    const file = path.join(root, "lan-access");
+    fs.writeFileSync(file, "# 局域网访问\nenabled\n", { mode: 0o600 });
+    assert.deepEqual(resolveLanAccess(root), { enabled: true });
+
+    // 内容不是字面 enabled：失败而不是当作关闭
+    fs.writeFileSync(file, "enabled=maybe\n", { mode: 0o600 });
+    assert.throws(() => resolveLanAccess(root), /单行字面值 enabled/);
+
+    // 权限过宽：失败
+    fs.writeFileSync(file, "enabled\n", { mode: 0o600 });
+    fs.chmodSync(file, 0o644);
+    assert.throws(() => resolveLanAccess(root), /0600/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("lanCorsOrigins: 只收私网 IPv4，按客户端端口展开", () => {
+  const { lanCorsOrigins } = require("../runtime.cjs");
+  const origins = lanCorsOrigins({
+    lo: [{ family: "IPv4", address: "127.0.0.1", internal: true }],
+    eth0: [
+      { family: "IPv4", address: "192.168.1.20", internal: false },
+      { family: "IPv6", address: "fe80::1", internal: false },
+    ],
+    wan: [{ family: "IPv4", address: "203.0.113.9", internal: false }],
+  });
+  assert.deepEqual(origins, [
+    "http://192.168.1.20:17818",
+    "http://192.168.1.20:8081",
+    "http://192.168.1.20:19006",
+  ]);
+});
+
+test("buildSidecarEnvironment: LAN 开启时绑 0.0.0.0 并合并 CORS，默认仍是回环", () => {
+  const { buildSidecarEnvironment } = require("../runtime.cjs");
+  const base = { PATH: "/usr/bin" };
+  const closedEnvironment = buildSidecarEnvironment(base, {
+    dataRoot: "/tmp/x",
+    sessionOwnerToken: "cp_owner_test",
+    readyNonce: "nonce",
+  });
+  assert.equal(closedEnvironment.CENTAURAI_POCKET_HOST, "127.0.0.1");
+  assert.equal(closedEnvironment.CENTAURAI_POCKET_CORS_ORIGINS, undefined);
+
+  const lanEnvironment = buildSidecarEnvironment(base, {
+    dataRoot: "/tmp/x",
+    sessionOwnerToken: "cp_owner_test",
+    readyNonce: "nonce",
+    lan: { enabled: true, corsOrigins: ["http://192.168.1.20:17818"] },
+  });
+  assert.equal(lanEnvironment.CENTAURAI_POCKET_HOST, "0.0.0.0");
+  assert.ok(
+    lanEnvironment.CENTAURAI_POCKET_CORS_ORIGINS.endsWith(
+      "http://192.168.1.20:17818",
+    ),
+  );
+  assert.ok(
+    lanEnvironment.CENTAURAI_POCKET_CORS_ORIGINS.includes(
+      "http://127.0.0.1:17818",
+    ),
+  );
+});
