@@ -6012,6 +6012,35 @@ class WorkspaceService:
                 connection.rollback()
                 raise
 
+    def record_assistant_cloud_call(
+        self,
+        workspace_id: str,
+        *,
+        device_id: str,
+        ticket_id: str,
+        payload: dict[str, Any],
+    ) -> None:
+        """§3.4：每次云端调用写一条 assistant.cloud_call 审计事件。
+
+        事件进入与业务写入同一条 secretary_workspace_events 流，主人在审计页
+        能看到本次送出内容的逐条范围；秘书端按 aggregate_type 忽略回放。
+        """
+
+        with self.database.transaction() as connection:
+            self._require_workspace(connection, workspace_id)
+            self._append_event(
+                connection,
+                workspace_id=workspace_id,
+                aggregate_type="assistant",
+                aggregate_id=ticket_id,
+                aggregate_version=1,
+                event_type="assistant.cloud_call",
+                operation="upsert",
+                actor_id=None,
+                device_id=device_id,
+                payload=payload,
+            )
+
     def sync(self, workspace_id: str, after: int, limit: int) -> dict[str, Any]:
         with self.database.connect() as connection:
             self._require_workspace(connection, workspace_id)

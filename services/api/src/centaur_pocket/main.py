@@ -27,11 +27,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from . import __version__
-from .assistant import ProposalStore, build_assistant_tools
+from .assistant import (
+    AssistantLoop,
+    CloudTicketStore,
+    ProposalStore,
+    ProviderError,
+    build_assistant_tools,
+    build_cloud_provider,
+    build_local_provider,
+)
 from .config import Settings
 from .database import Database
 from .mail_router import create_mail_router
-from .mcp import PROTOCOL_VERSION, MCPServer
+from .mcp import KNOWLEDGE_RETRIEVE_TOOL, PROTOCOL_VERSION, MCPServer, MCPTool
 from .outlook_mail import OutlookMailService
 from .reliable_sources_router import create_reliable_sources_router
 from .schemas import (
@@ -653,6 +661,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         proposal_store = ProposalStore(service.database)
         proposal_store.initialize()
         app.state.proposals = proposal_store
+        ticket_store = CloudTicketStore(service.database)
+        ticket_store.initialize()
+        app.state.assistant_tickets = ticket_store
+        # §3.4：模型编排在 Pocket 服务端；provider 未配置时保持 None，
+        # /assistant/chat 返回 503，秘书端按 §3.5 降级为确定性指令
+        app.state.assistant_local_provider = build_local_provider(runtime_settings)
+        app.state.assistant_cloud_provider = build_cloud_provider(runtime_settings)
         scheduler_task: asyncio.Task[None] | None = None
 
         async def scheduler() -> None:
@@ -1530,6 +1545,172 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> dict:
         proposals: ProposalStore = request.app.state.proposals
         return {"proposal": proposals.decide(proposal_id, status="dismissed")}
+
+    def _assistant_tools(
+        request: Request,
+        service: PocketService,
+        *,
+        include_knowledge: bool = True,
+    ) -> list[MCPTool]:
+        """§3.3 工具面 ＋ knowledge_retrieve，供编排循环直接调用。
+
+        云端通道未授权 documents 正文时不给 knowledge_retrieve：
+        检索摘录就是正文内容，默认剔除，需主人在票据里额外勾选。
+        """
+
+        tools = build_assistant_tools(
+            request.app.state.workspace_service,
+            service,
+            request.app.state.mail_service,
+            request.app.state.proposals,
+        )
+        if include_knowledge:
+
+            def knowledge_handler(arguments: dict) -> dict:
+                query, limit, filters = MCPServer._knowledge_arguments(  # noqa: SLF001
+                    dict(arguments)
+                )
+                return service.agent_search(
+                    query=query,
+                    limit=limit,
+                    tags=filters["tags"],
+                    category=filters["category"],
+                )
+
+            tools = [MCPTool(KNOWLEDGE_RETRIEVE_TOOL, knowledge_handler), *tools]
+        return tools
+
+    @application.get(f"{API_PREFIX}/assistant/status")
+    def assistant_status(
+        request: Request,
+        service: PocketService = Depends(require_owner),
+    ) -> dict:
+        local = request.app.state.assistant_local_provider
+        cloud = request.app.state.assistant_cloud_provider
+        tickets: CloudTicketStore = request.app.state.assistant_tickets
+        stats = tickets.stats()
+        return {
+            "local": (
+                {"provider": local.name, "model": local.model} if local else None
+            ),
+            "cloud": (
+                {"provider": cloud.name, "model": cloud.model} if cloud else None
+            ),
+            "limits": {
+                "max_rounds": 6,
+                "max_seconds": 30,
+                "max_response_bytes": 64 * 1024,
+                "ticket_ttl_seconds": 300,
+            },
+            "calls_total": stats["calls_total"],
+            "tool_calls_total": stats["tool_calls_total"],
+            "last_call": stats["last_call"],
+            "active_tickets": tickets.active()["total"],
+            "proposals_pending": request.app.state.proposals.list("pending")["total"],
+        }
+
+    @application.post(f"{API_PREFIX}/assistant/chat")
+    def assistant_chat(
+        request: Request,
+        device_id: Annotated[
+            str, Header(alias="X-Device-ID", min_length=1, max_length=200)
+        ],
+        payload: dict[str, Any] = Body(...),
+        service: PocketService = Depends(require_owner),
+    ) -> dict:
+        if set(payload) - {"message", "channel", "ticket_id"}:
+            raise PocketError(422, "chat 请求含未知字段")
+        message = payload.get("message")
+        if not isinstance(message, str) or not message.strip():
+            raise PocketError(422, "message 不能为空")
+        if len(message) > 8000:
+            raise PocketError(422, "message 不能超过 8000 字")
+        channel = payload.get("channel", "local")
+        if channel not in {"local", "cloud"}:
+            raise PocketError(422, "channel 只能是 local 或 cloud")
+
+        ticket_id: str | None = None
+        if channel == "cloud":
+            provider = request.app.state.assistant_cloud_provider
+            if provider is None:
+                raise PocketError(503, "云端模型 Provider 未配置")
+            raw_ticket = payload.get("ticket_id")
+            if not isinstance(raw_ticket, str) or not raw_ticket:
+                raise PocketError(422, "云端调用必须携带授权票据 ID")
+            tickets: CloudTicketStore = request.app.state.assistant_tickets
+            ticket = tickets.consume(raw_ticket)
+            ticket_id = ticket["ticket_id"]
+            scope_items = ticket["scope"].get("items", [])
+            include_knowledge = any(
+                item.get("category") == "documents" and item.get("include_body")
+                for item in scope_items
+            )
+            # §3.4：每次云端调用写一条 assistant.cloud_call 审计事件
+            request.app.state.workspace_service.record_assistant_cloud_call(
+                "ws_default",
+                device_id=device_id,
+                ticket_id=ticket_id,
+                payload={
+                    "provider": provider.name,
+                    "model": provider.model,
+                    "scope": ticket["scope"],
+                    "message_chars": len(message),
+                },
+            )
+        else:
+            provider = request.app.state.assistant_local_provider
+            if provider is None:
+                raise PocketError(503, "本地模型 Provider 未配置")
+            include_knowledge = True
+
+        loop = AssistantLoop(
+            provider,
+            _assistant_tools(
+                request, service, include_knowledge=include_knowledge
+            ),
+        )
+        try:
+            result = loop.run(message.strip(), ticket_id=ticket_id)
+        except ProviderError as error:
+            raise PocketError(503, f"模型调用失败：{str(error)[:300]}") from error
+        tickets_store: CloudTicketStore = request.app.state.assistant_tickets
+        tickets_store.record_call(
+            channel=channel,
+            provider=provider.name,
+            model=provider.model,
+            rounds=result["provenance"]["tool_rounds"],
+            tool_calls=result["tool_calls"],
+            retrieval_count=result["provenance"]["retrieval_count"],
+            duration_ms=result["provenance"]["duration_ms"],
+            stopped=result["stopped"],
+            ticket_id=ticket_id,
+        )
+        return result
+
+    @application.post(
+        f"{API_PREFIX}/assistant/cloud-tickets",
+        status_code=status.HTTP_201_CREATED,
+    )
+    def issue_cloud_ticket(
+        request: Request,
+        device_id: Annotated[
+            str, Header(alias="X-Device-ID", min_length=1, max_length=200)
+        ],
+        payload: dict[str, Any] = Body(...),
+        service: PocketService = Depends(require_owner),
+    ) -> dict:
+        if set(payload) - {"scope"}:
+            raise PocketError(422, "cloud-tickets 请求只接受 scope 字段")
+        tickets: CloudTicketStore = request.app.state.assistant_tickets
+        return tickets.issue(payload.get("scope"))
+
+    @application.get(f"{API_PREFIX}/assistant/cloud-tickets")
+    def list_cloud_tickets(
+        request: Request,
+        service: PocketService = Depends(require_owner),
+    ) -> dict:
+        tickets: CloudTicketStore = request.app.state.assistant_tickets
+        return tickets.active()
 
     @application.post(f"{API_PREFIX}/agent/search")
     def agent_search(

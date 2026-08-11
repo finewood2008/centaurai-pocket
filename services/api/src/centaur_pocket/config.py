@@ -38,6 +38,14 @@ class Settings:
     task_execution_public_origin: str | None = None
     outlook_client_id: str | None = None
     outlook_tenant: str = "common"
+    # 秘书 Agent 模型编排（§3.4）：编排在服务端，手机端绝不持有模型密钥
+    assistant_provider: str | None = None
+    assistant_model: str = "qwen2.5:14b"
+    ollama_url: str = "http://127.0.0.1:11434"
+    assistant_cloud_provider: str | None = None
+    assistant_cloud_model: str = "claude-opus-5"
+    assistant_cloud_api_key: str | None = None
+    assistant_cloud_base_url: str = "https://api.anthropic.com"
 
     def __post_init__(self) -> None:
         value = self.task_execution_public_origin
@@ -95,6 +103,33 @@ class Settings:
             outlook_tenant=(
                 os.getenv("CENTAURAI_POCKET_OUTLOOK_TENANT", "common").strip()
                 or "common"
+            ),
+            assistant_provider=(
+                os.getenv("CENTAURAI_POCKET_ASSISTANT_PROVIDER", "").strip() or None
+            ),
+            assistant_model=(
+                os.getenv("CENTAURAI_POCKET_ASSISTANT_MODEL", "").strip()
+                or "qwen2.5:14b"
+            ),
+            ollama_url=(
+                os.getenv("CENTAURAI_POCKET_OLLAMA_URL", "").strip()
+                or "http://127.0.0.1:11434"
+            ),
+            assistant_cloud_provider=(
+                os.getenv("CENTAURAI_POCKET_ASSISTANT_CLOUD_PROVIDER", "").strip()
+                or None
+            ),
+            assistant_cloud_model=(
+                os.getenv("CENTAURAI_POCKET_ASSISTANT_CLOUD_MODEL", "").strip()
+                or "claude-opus-5"
+            ),
+            assistant_cloud_api_key=(
+                os.getenv("CENTAURAI_POCKET_ASSISTANT_CLOUD_API_KEY", "").strip()
+                or None
+            ),
+            assistant_cloud_base_url=(
+                os.getenv("CENTAURAI_POCKET_ASSISTANT_CLOUD_BASE_URL", "").strip()
+                or "https://api.anthropic.com"
             ),
         )
 
